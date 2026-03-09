@@ -1270,11 +1270,15 @@ export default function Page() {
         </div>
       )}
 
-      <div style={styles.shell}>
-        <div style={styles.topTitle}>Bill Reminder + Budget Tracker</div>
+     <div style={styles.shell}>
+  <div style={styles.topTitle}>Bill Reminder + Budget Tracker</div>
 
-        <div style={styles.headerRow}>
-          <div style={styles.cardGrid}>
+  <div style={styles.monthSwitcher}>
+  ...
+</div>
+
+<div style={styles.headerRow}>
+  <div style={styles.cardGrid}>
             <div style={styles.statCard}>
               <div style={styles.statLabel}>Planned Bills</div>
               <div style={styles.statValue}>{money(plannedBillsTotal)}</div>
@@ -1296,17 +1300,6 @@ export default function Page() {
               <div style={styles.statValue}>{money(savingsTotal)}</div>
             </div>
           </div>
-
-          <div style={styles.monthSwitcher}>
-            <button style={styles.monthButton} onClick={goToPreviousMonth}>
-              ‹
-            </button>
-            <div style={styles.monthLabel}>{monthLabelFromKey(currentMonthKey)}</div>
-            <button style={styles.monthButton} onClick={goToNextMonth}>
-              ›
-            </button>
-          </div>
-        </div>
 
         <div style={styles.tabs}>
           <button

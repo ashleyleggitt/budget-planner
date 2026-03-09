@@ -570,7 +570,7 @@ export default function Page() {
     },
     sectionGrid: {
       display: "grid",
-      gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+      gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
       gap: 16,
     },
     panel: {

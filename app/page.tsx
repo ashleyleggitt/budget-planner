@@ -1326,6 +1326,5 @@ export default function Page() {
         {activeTab === "budget" && renderBudgetTab()}
         {activeTab === "calendar" && renderCalendarTab()}
       </div>
-    </div>
   );
 }

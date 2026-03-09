@@ -1152,7 +1152,7 @@ export default function Page() {
 
     return (
       <div style={styles.panel}>
-        <div style={styles.panelTitle}>Calendar / Notes</div>
+        <div style={styles.panelTitle}>Calendar</div>
         <div style={styles.panelSub}>
           Add work shifts, appointments, deadlines, or reminders for each day.
         </div>
@@ -1325,7 +1325,7 @@ export default function Page() {
             style={activeTab === "calendar" ? styles.activeTab : styles.tab}
             onClick={() => setActiveTab("calendar")}
           >
-            Calendar / Notes
+            Calendar
           </button>
         </div>
 

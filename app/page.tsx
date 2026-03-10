@@ -50,7 +50,7 @@ type CalendarCell = {
 
 const STORAGE_KEY = "budget-planner-mobile-v1";
 const PASSWORD_STORAGE_KEY = "budget-planner-unlocked";
-const APP_PASSWORD = "ashley123"; // change if you want
+const APP_PASSWORD = "budget365"; // change if you want
 
 const COLORS = {
   bg: "#f8f6f1",

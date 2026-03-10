@@ -49,6 +49,8 @@ type CalendarCell = {
 } | null;
 
 const STORAGE_KEY = "budget-planner-mobile-v1";
+const PASSWORD_STORAGE_KEY = "budget-planner-unlocked";
+const APP_PASSWORD = "ashley123"; // change if you want
 
 const COLORS = {
   bg: "#f8f6f1",
@@ -59,6 +61,8 @@ const COLORS = {
   text: "#2f2b24",
   subtext: "#70685d",
   shadow: "0 4px 16px rgba(0,0,0,0.03)",
+  danger: "#b75b5b",
+  dangerBg: "#fff5f5",
 };
 
 function createId() {
@@ -168,6 +172,10 @@ export default function Page() {
   const initialMonth = formatMonthKey(new Date());
 
   const [mounted, setMounted] = useState(false);
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+
   const [activeTab, setActiveTab] = useState<TabKey>("bills");
   const [currentMonthKey, setCurrentMonthKey] = useState(initialMonth);
   const [appData, setAppData] = useState<AppData>({
@@ -194,6 +202,11 @@ export default function Page() {
     setMounted(true);
 
     try {
+      const unlocked = window.localStorage.getItem(PASSWORD_STORAGE_KEY);
+      if (unlocked === "true") {
+        setIsUnlocked(true);
+      }
+
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
 
@@ -219,6 +232,22 @@ export default function Page() {
     setAppData((prev) => cloneRecurringBillsForward(prev, currentMonthKey));
     setSelectedCalendarDay(`${currentMonthKey}-01`);
   }, [currentMonthKey]);
+
+  function handleUnlock() {
+    if (passwordInput === APP_PASSWORD) {
+      setIsUnlocked(true);
+      setPasswordError("");
+      window.localStorage.setItem(PASSWORD_STORAGE_KEY, "true");
+    } else {
+      setPasswordError("Incorrect password");
+    }
+  }
+
+  function handleLogout() {
+    setIsUnlocked(false);
+    setPasswordInput("");
+    window.localStorage.removeItem(PASSWORD_STORAGE_KEY);
+  }
 
   const monthData = appData[currentMonthKey] ?? emptyMonthData();
   const unpaidBills = monthData.bills.filter((bill) => !bill.paid);
@@ -286,6 +315,13 @@ export default function Page() {
     }));
   }
 
+  function deleteBill(id: string) {
+    updateMonthData((existing) => ({
+      ...existing,
+      bills: existing.bills.filter((bill) => bill.id !== id),
+    }));
+  }
+
   function addIncome() {
     if (!incomeLabel.trim()) return;
 
@@ -303,6 +339,13 @@ export default function Page() {
 
     setIncomeLabel("");
     setIncomeAmount("");
+  }
+
+  function deleteIncome(id: string) {
+    updateMonthData((existing) => ({
+      ...existing,
+      incomes: existing.incomes.filter((income) => income.id !== id),
+    }));
   }
 
   function addBucket() {
@@ -326,6 +369,13 @@ export default function Page() {
     setBucketTarget("");
   }
 
+  function deleteBucket(id: string) {
+    updateMonthData((existing) => ({
+      ...existing,
+      buckets: existing.buckets.filter((bucket) => bucket.id !== id),
+    }));
+  }
+
   function addGoal() {
     if (!goalText.trim()) return;
 
@@ -335,6 +385,13 @@ export default function Page() {
     }));
 
     setGoalText("");
+  }
+
+  function deleteGoal(id: string) {
+    updateMonthData((existing) => ({
+      ...existing,
+      goals: existing.goals.filter((goal) => goal.id !== id),
+    }));
   }
 
   function addCalendarEntry() {
@@ -354,356 +411,33 @@ export default function Page() {
     setCalendarInput("");
   }
 
+  function deleteCalendarEntry(indexToDelete: number) {
+    if (!selectedCalendarDay) return;
+
+    updateMonthData((existing) => {
+      const currentEntries = existing.calendarEntries[selectedCalendarDay] ?? [];
+      const updatedEntries = currentEntries.filter((_, index) => index !== indexToDelete);
+
+      const nextCalendarEntries = { ...existing.calendarEntries };
+
+      if (updatedEntries.length === 0) {
+        delete nextCalendarEntries[selectedCalendarDay];
+      } else {
+        nextCalendarEntries[selectedCalendarDay] = updatedEntries;
+      }
+
+      return {
+        ...existing,
+        calendarEntries: nextCalendarEntries,
+      };
+    });
+  }
+
   function updateMonthNotes(value: string) {
     updateMonthData((existing) => ({
       ...existing,
       notes: value,
     }));
-  }
-
-  function renderBillsTab() {
-    return (
-      <div style={styles.stack}>
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Month Overview</div>
-          <div style={styles.panelSub}>{monthLabelFromKey(currentMonthKey)}</div>
-
-          <div style={styles.sectionDividerRow}>
-            <div style={styles.sectionDivider} />
-            <div style={styles.sectionDividerText}>GOALS</div>
-            <div style={styles.sectionDivider} />
-          </div>
-
-          <div style={styles.inputRow}>
-            <input
-              style={styles.input}
-              placeholder="e.g. Save $1,000 · Spend less eating out"
-              value={goalText}
-              onChange={(e) => setGoalText(e.target.value)}
-            />
-            <button style={styles.primaryButton} onClick={addGoal}>
-              Add
-            </button>
-          </div>
-
-          {monthData.goals.length === 0 ? (
-            <div style={styles.emptyText}>No goals yet.</div>
-          ) : (
-            <div style={styles.listStack}>
-              {monthData.goals.map((goal) => (
-                <div key={goal.id} style={styles.listItem}>
-                  {goal.text}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Bills Checklist</div>
-          <div style={styles.panelSub}>Bills do not require dates. Amounts optional.</div>
-
-          <div style={styles.billsInputGrid}>
-            <input
-              style={styles.input}
-              placeholder="Rent, phone, internet..."
-              value={billName}
-              onChange={(e) => setBillName(e.target.value)}
-            />
-            <input
-              style={styles.input}
-              inputMode="decimal"
-              placeholder="$ (optional)"
-              value={billAmount}
-              onChange={(e) => setBillAmount(e.target.value)}
-            />
-            <label style={styles.checkboxWrap}>
-              <input
-                type="checkbox"
-                checked={billRecurring}
-                onChange={(e) => setBillRecurring(e.target.checked)}
-              />
-              recurring
-            </label>
-            <button style={styles.primaryButton} onClick={addBill}>
-              Add
-            </button>
-          </div>
-
-          <div style={styles.totalsCard}>
-            <div style={styles.totalRow}>
-              <span>Planned</span>
-              <strong>{money(plannedBillsTotal)}</strong>
-            </div>
-            <div style={styles.totalRow}>
-              <span>Paid</span>
-              <strong>{money(paidBillsTotal)}</strong>
-            </div>
-            <div style={styles.totalRow}>
-              <span>Remaining</span>
-              <strong>{money(remainingBillsTotal)}</strong>
-            </div>
-          </div>
-
-          <div style={styles.smallHeading}>UNPAID BILLS</div>
-
-          {unpaidBills.length === 0 ? (
-            <div style={styles.emptyText}>No unpaid bills.</div>
-          ) : (
-            <div style={styles.listStack}>
-              {unpaidBills.map((bill) => (
-                <label key={bill.id} style={styles.billRow}>
-                  <input
-                    type="checkbox"
-                    checked={bill.paid}
-                    onChange={() => toggleBillPaid(bill.id)}
-                  />
-                  <div style={styles.billTextWrap}>
-                    <div style={styles.billName}>{bill.name}</div>
-                    <div style={styles.billMeta}>
-                      {bill.amount ? money(bill.amount) : "No amount"}
-                      {bill.recurring ? " · recurring" : ""}
-                    </div>
-                  </div>
-                </label>
-              ))}
-            </div>
-          )}
-
-          <details style={styles.detailsBox}>
-            <summary style={styles.summaryLine}>Paid Bills ({paidBills.length})</summary>
-            <div style={styles.detailsContent}>
-              {paidBills.length === 0 ? (
-                <div style={styles.emptyText}>No paid bills yet.</div>
-              ) : (
-                paidBills.map((bill) => (
-                  <label key={bill.id} style={styles.billRowPaid}>
-                    <input
-                      type="checkbox"
-                      checked={bill.paid}
-                      onChange={() => toggleBillPaid(bill.id)}
-                    />
-                    <div style={styles.billTextWrap}>
-                      <div style={styles.billName}>{bill.name}</div>
-                      <div style={styles.billMeta}>
-                        {bill.amount ? money(bill.amount) : "No amount"}
-                        {bill.recurring ? " · recurring" : ""}
-                      </div>
-                    </div>
-                  </label>
-                ))
-              )}
-            </div>
-          </details>
-
-          {unpaidBills.length === 0 && monthData.bills.length > 0 ? (
-            <div style={styles.celebrationBox}>
-              ✨ All bills paid for {monthLabelFromKey(currentMonthKey)}!
-            </div>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
-
-  function renderBudgetTab() {
-    return (
-      <div style={styles.stack}>
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Income</div>
-          <div style={styles.panelSub}>Track monthly income entries.</div>
-
-          <div style={styles.inputRow}>
-            <input
-              style={styles.input}
-              placeholder="Paycheck, side income..."
-              value={incomeLabel}
-              onChange={(e) => setIncomeLabel(e.target.value)}
-            />
-            <input
-              style={styles.input}
-              inputMode="decimal"
-              placeholder="$ amount"
-              value={incomeAmount}
-              onChange={(e) => setIncomeAmount(e.target.value)}
-            />
-            <button style={styles.primaryButton} onClick={addIncome}>
-              Add
-            </button>
-          </div>
-
-          {monthData.incomes.length === 0 ? (
-            <div style={styles.emptyText}>None yet.</div>
-          ) : (
-            <div style={styles.listStack}>
-              {monthData.incomes.map((income) => (
-                <div key={income.id} style={styles.listItemRow}>
-                  <span>{income.label}</span>
-                  <strong>{money(income.amount)}</strong>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Savings Buckets</div>
-          <div style={styles.panelSub}>Track progress toward simple savings goals.</div>
-
-          <div style={styles.bucketInputGrid}>
-            <input
-              style={styles.input}
-              placeholder="Emergency fund"
-              value={bucketName}
-              onChange={(e) => setBucketName(e.target.value)}
-            />
-            <input
-              style={styles.input}
-              inputMode="decimal"
-              placeholder="$ current"
-              value={bucketCurrent}
-              onChange={(e) => setBucketCurrent(e.target.value)}
-            />
-            <input
-              style={styles.input}
-              inputMode="decimal"
-              placeholder="$ target"
-              value={bucketTarget}
-              onChange={(e) => setBucketTarget(e.target.value)}
-            />
-            <button style={styles.primaryButton} onClick={addBucket}>
-              Add
-            </button>
-          </div>
-
-          {monthData.buckets.length === 0 ? (
-            <div style={styles.emptyText}>None yet.</div>
-          ) : (
-            <div style={styles.listStack}>
-              {monthData.buckets.map((bucket) => {
-                const progress =
-                  bucket.target > 0
-                    ? Math.min(100, (bucket.current / bucket.target) * 100)
-                    : 0;
-
-                return (
-                  <div key={bucket.id} style={styles.bucketCard}>
-                    <div style={styles.listItemRow}>
-                      <span>{bucket.name}</span>
-                      <strong>
-                        {money(bucket.current)} / {money(bucket.target)}
-                      </strong>
-                    </div>
-                    <div style={styles.progressTrack}>
-                      <div style={{ ...styles.progressFill, width: `${progress}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  function renderCalendarTab() {
-    return (
-      <div style={styles.stack}>
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Calendar</div>
-          <div style={styles.panelSub}>
-            Add work shifts, appointments, deadlines, or reminders for each day.
-          </div>
-
-          <div style={styles.weekdayRow}>
-            {["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map((day) => (
-              <div key={day} style={styles.weekdayLabel}>
-                {day}
-              </div>
-            ))}
-          </div>
-
-          <div style={styles.calendarGrid}>
-            {calendarCells.map((cell, index) => {
-              const isEmpty = !cell;
-              const isSelected = cell?.dateKey === selectedCalendarDay;
-              const preview = cell ? monthData.calendarEntries[cell.dateKey] ?? [] : [];
-
-              return (
-                <button
-                  key={cell?.dateKey ?? `empty-${index}`}
-                  type="button"
-                  disabled={isEmpty}
-                  onClick={() => {
-                    if (cell) setSelectedCalendarDay(cell.dateKey);
-                  }}
-                  style={{
-                    ...styles.calendarCell,
-                    ...(isEmpty ? styles.calendarCellEmpty : {}),
-                    ...(isSelected ? styles.calendarCellSelected : {}),
-                  }}
-                >
-                  {cell ? (
-                    <>
-                      <div style={styles.calendarCellDate}>{cell.dayNumber}</div>
-                      <div style={styles.calendarCellPreview}>
-                        {preview.slice(0, 2).map((entry, i) => (
-                          <div key={i} style={styles.calendarPreviewLine}>
-                            {entry}
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Selected Day: {selectedCalendarDay}</div>
-          <div style={styles.panelSub}>
-            Add short notes like work, appointment, payday, or project due.
-          </div>
-
-          <div style={styles.inputRow}>
-            <input
-              style={styles.input}
-              placeholder="Add entry..."
-              value={calendarInput}
-              onChange={(e) => setCalendarInput(e.target.value)}
-            />
-            <button style={styles.primaryButton} onClick={addCalendarEntry}>
-              Add
-            </button>
-          </div>
-
-          {selectedEntries.length === 0 ? (
-            <div style={styles.emptyText}>No entries for this day yet.</div>
-          ) : (
-            <div style={styles.listStack}>
-              {selectedEntries.map((entry, index) => (
-                <div key={`${selectedCalendarDay}-${index}`} style={styles.listItem}>
-                  {entry}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Month Notes</div>
-          <textarea
-            style={styles.notesArea}
-            placeholder="Month notes, payday reminders, work schedule, project notes, or anything you want to remember..."
-            value={monthData.notes}
-            onChange={(e) => updateMonthNotes(e.target.value)}
-          />
-        </div>
-      </div>
-    );
   }
 
   const styles: Record<string, React.CSSProperties> = {
@@ -715,6 +449,44 @@ export default function Page() {
       maxWidth: 430,
       margin: "0 auto",
       fontFamily: "Inter, system-ui, sans-serif",
+    },
+    gateShell: {
+      minHeight: "100vh",
+      background: COLORS.bg,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20,
+      fontFamily: "Inter, system-ui, sans-serif",
+    },
+    gateCard: {
+      width: "100%",
+      maxWidth: 420,
+      background: COLORS.panel,
+      border: `1px solid ${COLORS.goldBorder}`,
+      borderRadius: 24,
+      padding: 24,
+      boxShadow: COLORS.shadow,
+    },
+    gateTitle: {
+      fontSize: 28,
+      fontWeight: 800,
+      textAlign: "center",
+      marginBottom: 8,
+      color: COLORS.text,
+    },
+    gateSub: {
+      fontSize: 14,
+      color: COLORS.subtext,
+      textAlign: "center",
+      lineHeight: 1.5,
+      marginBottom: 18,
+    },
+    gateError: {
+      marginTop: 10,
+      color: "#a94442",
+      fontSize: 14,
+      textAlign: "center",
     },
     topTitle: {
       textAlign: "center",
@@ -883,6 +655,11 @@ export default function Page() {
       cursor: "pointer",
       whiteSpace: "nowrap",
     },
+    logoutRow: {
+      display: "flex",
+      justifyContent: "flex-end",
+      marginBottom: 14,
+    },
     billsInputGrid: {
       display: "grid",
       gridTemplateColumns: "1.4fr 1fr",
@@ -941,7 +718,7 @@ export default function Page() {
     },
     billRow: {
       display: "grid",
-      gridTemplateColumns: "20px 1fr",
+      gridTemplateColumns: "20px 1fr auto",
       alignItems: "start",
       gap: 12,
       border: `1px solid ${COLORS.goldBorder}`,
@@ -952,7 +729,7 @@ export default function Page() {
     },
     billRowPaid: {
       display: "grid",
-      gridTemplateColumns: "20px 1fr",
+      gridTemplateColumns: "20px 1fr auto",
       alignItems: "start",
       gap: 12,
       border: `1px solid ${COLORS.goldBorder}`,
@@ -1107,14 +884,472 @@ export default function Page() {
       fontSize: 15,
       lineHeight: 1.45,
     },
+    deleteButton: {
+      border: `1px solid #e7caca`,
+      background: COLORS.dangerBg,
+      color: COLORS.danger,
+      borderRadius: 12,
+      padding: "8px 10px",
+      fontSize: 12,
+      fontWeight: 700,
+      cursor: "pointer",
+      alignSelf: "center",
+      whiteSpace: "nowrap",
+    },
+    itemWithDelete: {
+      display: "grid",
+      gridTemplateColumns: "1fr auto",
+      gap: 10,
+      alignItems: "center",
+    },
   };
+
+  function renderBillsTab() {
+    return (
+      <div style={styles.stack}>
+        <div style={styles.panel}>
+          <div style={styles.panelTitle}>Month Overview</div>
+          <div style={styles.panelSub}>{monthLabelFromKey(currentMonthKey)}</div>
+
+          <div style={styles.sectionDividerRow}>
+            <div style={styles.sectionDivider} />
+            <div style={styles.sectionDividerText}>GOALS</div>
+            <div style={styles.sectionDivider} />
+          </div>
+
+          <div style={styles.inputRow}>
+            <input
+              style={styles.input}
+              placeholder="e.g. Save $1,000 · Spend less eating out"
+              value={goalText}
+              onChange={(e) => setGoalText(e.target.value)}
+            />
+            <button style={styles.primaryButton} onClick={addGoal}>
+              Add
+            </button>
+          </div>
+
+          {monthData.goals.length === 0 ? (
+            <div style={styles.emptyText}>No goals yet.</div>
+          ) : (
+            <div style={styles.listStack}>
+              {monthData.goals.map((goal) => (
+                <div key={goal.id} style={styles.listItem}>
+                  <div style={styles.itemWithDelete}>
+                    <span>{goal.text}</span>
+                    <button
+                      type="button"
+                      style={styles.deleteButton}
+                      onClick={() => deleteGoal(goal.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={styles.panel}>
+          <div style={styles.panelTitle}>Bills Checklist</div>
+          <div style={styles.panelSub}>Bills do not require dates. Amounts optional.</div>
+
+          <div style={styles.billsInputGrid}>
+            <input
+              style={styles.input}
+              placeholder="Rent, phone, internet..."
+              value={billName}
+              onChange={(e) => setBillName(e.target.value)}
+            />
+            <input
+              style={styles.input}
+              inputMode="decimal"
+              placeholder="$ (optional)"
+              value={billAmount}
+              onChange={(e) => setBillAmount(e.target.value)}
+            />
+            <label style={styles.checkboxWrap}>
+              <input
+                type="checkbox"
+                checked={billRecurring}
+                onChange={(e) => setBillRecurring(e.target.checked)}
+              />
+              recurring
+            </label>
+            <button style={styles.primaryButton} onClick={addBill}>
+              Add
+            </button>
+          </div>
+
+          <div style={styles.totalsCard}>
+            <div style={styles.totalRow}>
+              <span>Planned</span>
+              <strong>{money(plannedBillsTotal)}</strong>
+            </div>
+            <div style={styles.totalRow}>
+              <span>Paid</span>
+              <strong>{money(paidBillsTotal)}</strong>
+            </div>
+            <div style={styles.totalRow}>
+              <span>Remaining</span>
+              <strong>{money(remainingBillsTotal)}</strong>
+            </div>
+          </div>
+
+          <div style={styles.smallHeading}>UNPAID BILLS</div>
+
+          {unpaidBills.length === 0 ? (
+            <div style={styles.emptyText}>No unpaid bills.</div>
+          ) : (
+            <div style={styles.listStack}>
+              {unpaidBills.map((bill) => (
+                <label key={bill.id} style={styles.billRow}>
+                  <input
+                    type="checkbox"
+                    checked={bill.paid}
+                    onChange={() => toggleBillPaid(bill.id)}
+                  />
+                  <div style={styles.billTextWrap}>
+                    <div style={styles.billName}>{bill.name}</div>
+                    <div style={styles.billMeta}>
+                      {bill.amount ? money(bill.amount) : "No amount"}
+                      {bill.recurring ? " · recurring" : ""}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    style={styles.deleteButton}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      deleteBill(bill.id);
+                    }}
+                  >
+                    Delete
+                  </button>
+                </label>
+              ))}
+            </div>
+          )}
+
+          <details style={styles.detailsBox}>
+            <summary style={styles.summaryLine}>Paid Bills ({paidBills.length})</summary>
+            <div style={styles.detailsContent}>
+              {paidBills.length === 0 ? (
+                <div style={styles.emptyText}>No paid bills yet.</div>
+              ) : (
+                paidBills.map((bill) => (
+                  <label key={bill.id} style={styles.billRowPaid}>
+                    <input
+                      type="checkbox"
+                      checked={bill.paid}
+                      onChange={() => toggleBillPaid(bill.id)}
+                    />
+                    <div style={styles.billTextWrap}>
+                      <div style={styles.billName}>{bill.name}</div>
+                      <div style={styles.billMeta}>
+                        {bill.amount ? money(bill.amount) : "No amount"}
+                        {bill.recurring ? " · recurring" : ""}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      style={styles.deleteButton}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        deleteBill(bill.id);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </label>
+                ))
+              )}
+            </div>
+          </details>
+
+          {unpaidBills.length === 0 && monthData.bills.length > 0 ? (
+            <div style={styles.celebrationBox}>
+              ✨ All bills paid for {monthLabelFromKey(currentMonthKey)}!
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  function renderBudgetTab() {
+    return (
+      <div style={styles.stack}>
+        <div style={styles.panel}>
+          <div style={styles.panelTitle}>Income</div>
+          <div style={styles.panelSub}>Track monthly income entries.</div>
+
+          <div style={styles.inputRow}>
+            <input
+              style={styles.input}
+              placeholder="Paycheck, side income..."
+              value={incomeLabel}
+              onChange={(e) => setIncomeLabel(e.target.value)}
+            />
+            <input
+              style={styles.input}
+              inputMode="decimal"
+              placeholder="$ amount"
+              value={incomeAmount}
+              onChange={(e) => setIncomeAmount(e.target.value)}
+            />
+            <button style={styles.primaryButton} onClick={addIncome}>
+              Add
+            </button>
+          </div>
+
+          {monthData.incomes.length === 0 ? (
+            <div style={styles.emptyText}>None yet.</div>
+          ) : (
+            <div style={styles.listStack}>
+              {monthData.incomes.map((income) => (
+                <div key={income.id} style={styles.listItemRow}>
+                  <span>{income.label}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <strong>{money(income.amount)}</strong>
+                    <button
+                      type="button"
+                      style={styles.deleteButton}
+                      onClick={() => deleteIncome(income.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={styles.panel}>
+          <div style={styles.panelTitle}>Savings Buckets</div>
+          <div style={styles.panelSub}>Track progress toward simple savings goals.</div>
+
+          <div style={styles.bucketInputGrid}>
+            <input
+              style={styles.input}
+              placeholder="Emergency fund"
+              value={bucketName}
+              onChange={(e) => setBucketName(e.target.value)}
+            />
+            <input
+              style={styles.input}
+              inputMode="decimal"
+              placeholder="$ current"
+              value={bucketCurrent}
+              onChange={(e) => setBucketCurrent(e.target.value)}
+            />
+            <input
+              style={styles.input}
+              inputMode="decimal"
+              placeholder="$ target"
+              value={bucketTarget}
+              onChange={(e) => setBucketTarget(e.target.value)}
+            />
+            <button style={styles.primaryButton} onClick={addBucket}>
+              Add
+            </button>
+          </div>
+
+          {monthData.buckets.length === 0 ? (
+            <div style={styles.emptyText}>None yet.</div>
+          ) : (
+            <div style={styles.listStack}>
+              {monthData.buckets.map((bucket) => {
+                const progress =
+                  bucket.target > 0
+                    ? Math.min(100, (bucket.current / bucket.target) * 100)
+                    : 0;
+
+                return (
+                  <div key={bucket.id} style={styles.bucketCard}>
+                    <div style={styles.listItemRow}>
+                      <span>{bucket.name}</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <strong>
+                          {money(bucket.current)} / {money(bucket.target)}
+                        </strong>
+                        <button
+                          type="button"
+                          style={styles.deleteButton}
+                          onClick={() => deleteBucket(bucket.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                    <div style={styles.progressTrack}>
+                      <div style={{ ...styles.progressFill, width: `${progress}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderCalendarTab() {
+    return (
+      <div style={styles.stack}>
+        <div style={styles.panel}>
+          <div style={styles.panelTitle}>Calendar</div>
+          <div style={styles.panelSub}>
+            Add work shifts, appointments, deadlines, or reminders for each day.
+          </div>
+
+          <div style={styles.weekdayRow}>
+            {["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map((day) => (
+              <div key={day} style={styles.weekdayLabel}>
+                {day}
+              </div>
+            ))}
+          </div>
+
+          <div style={styles.calendarGrid}>
+            {calendarCells.map((cell, index) => {
+              const isEmpty = !cell;
+              const isSelected = cell?.dateKey === selectedCalendarDay;
+              const preview = cell ? monthData.calendarEntries[cell.dateKey] ?? [] : [];
+
+              return (
+                <button
+                  key={cell?.dateKey ?? `empty-${index}`}
+                  type="button"
+                  disabled={isEmpty}
+                  onClick={() => {
+                    if (cell) setSelectedCalendarDay(cell.dateKey);
+                  }}
+                  style={{
+                    ...styles.calendarCell,
+                    ...(isEmpty ? styles.calendarCellEmpty : {}),
+                    ...(isSelected ? styles.calendarCellSelected : {}),
+                  }}
+                >
+                  {cell ? (
+                    <>
+                      <div style={styles.calendarCellDate}>{cell.dayNumber}</div>
+                      <div style={styles.calendarCellPreview}>
+                        {preview.slice(0, 2).map((entry, i) => (
+                          <div key={i} style={styles.calendarPreviewLine}>
+                            {entry}
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div style={styles.panel}>
+          <div style={styles.panelTitle}>Selected Day: {selectedCalendarDay}</div>
+          <div style={styles.panelSub}>
+            Add short notes like work, appointment, payday, or project due.
+          </div>
+
+          <div style={styles.inputRow}>
+            <input
+              style={styles.input}
+              placeholder="Add entry..."
+              value={calendarInput}
+              onChange={(e) => setCalendarInput(e.target.value)}
+            />
+            <button style={styles.primaryButton} onClick={addCalendarEntry}>
+              Add
+            </button>
+          </div>
+
+          {selectedEntries.length === 0 ? (
+            <div style={styles.emptyText}>No entries for this day yet.</div>
+          ) : (
+            <div style={styles.listStack}>
+              {selectedEntries.map((entry, index) => (
+                <div key={`${selectedCalendarDay}-${index}`} style={styles.listItem}>
+                  <div style={styles.itemWithDelete}>
+                    <span>{entry}</span>
+                    <button
+                      type="button"
+                      style={styles.deleteButton}
+                      onClick={() => deleteCalendarEntry(index)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={styles.panel}>
+          <div style={styles.panelTitle}>Month Notes</div>
+          <textarea
+            style={styles.notesArea}
+            placeholder="Month notes, payday reminders, work schedule, project notes, or anything you want to remember..."
+            value={monthData.notes}
+            onChange={(e) => updateMonthNotes(e.target.value)}
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (!mounted) {
     return <div style={{ background: COLORS.bg, minHeight: "100vh" }} />;
   }
 
+  if (!isUnlocked) {
+    return (
+      <div style={styles.gateShell}>
+        <div style={styles.gateCard}>
+          <div style={styles.gateTitle}>Budget Tracker</div>
+          <div style={styles.gateSub}>Enter your password to open the app.</div>
+
+          <input
+            type="password"
+            style={styles.input}
+            placeholder="Enter password"
+            value={passwordInput}
+            onChange={(e) => {
+              setPasswordInput(e.target.value);
+              if (passwordError) setPasswordError("");
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleUnlock();
+            }}
+          />
+
+          <div style={{ marginTop: 14 }}>
+            <button style={{ ...styles.primaryButton, width: "100%" }} onClick={handleUnlock}>
+              Unlock
+            </button>
+          </div>
+
+          {passwordError ? <div style={styles.gateError}>{passwordError}</div> : null}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.shell}>
+      <div style={styles.logoutRow}>
+        <button style={styles.deleteButton} onClick={handleLogout}>
+          Lock App
+        </button>
+      </div>
+
       <div style={styles.topTitle}>Bill Reminder + Budget Tracker</div>
 
       <div style={styles.monthSwitcher}>

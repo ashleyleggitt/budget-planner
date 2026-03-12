@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Budget Planner",
-    short_name: "Budget Planner",
+    name: "Budget365",
+    short_name: "Budget365",
     description: "Track bills, savings goals, and monthly budgets in one place.",
     start_url: "/",
     display: "standalone",
@@ -18,6 +18,11 @@ export default function manifest(): MetadataRoute.Manifest {
       {
         src: "/icon-512x512.png",
         sizes: "512x512",
+        type: "image/png",
+      },
+      {
+        src: "/apple-touch-icon.png",
+        sizes: "180x180",
         type: "image/png",
       },
     ],

@@ -911,10 +911,15 @@ export default function Page() {
           style={styles.hiddenFileInput}
         />
 
-        <div style={styles.topBar}>
+                <div style={styles.topBar}>
           <div style={styles.topBarSide} />
           <div style={styles.topBarCenter}>
-            <h1 style={styles.mainTitle}>Budget &amp; Life Tracker</h1>
+            <div style={styles.brandWrap}>
+              <h1 style={styles.brandTitle}>
+                Budget<span style={styles.gold}>365</span>
+              </h1>
+              <div style={styles.subtitle}>Budget & Life Tracker</div>
+            </div>
           </div>
           <div style={styles.topBarSideRight}>
             <div style={styles.topBarButtons}>
@@ -1558,6 +1563,26 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: "nowrap",
   },
 
+  brandWrap: {
+  textAlign: "center",
+  lineHeight: 1.1
+},
+
+brandTitle: {
+  fontSize: 34,
+  fontWeight: 700,
+  margin: 0
+},
+
+gold: {
+  color: "#C8B98B"
+},
+
+subtitle: {
+  fontSize: 14,
+  opacity: 0.7,
+  marginTop: 2
+},
   exportButton: {
     height: 32,
     padding: "0 8px",

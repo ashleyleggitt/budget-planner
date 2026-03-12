@@ -1,1420 +1,1953 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type TabKey = "bills" | "budget" | "calendar";
 
-type BillItem = {
+type Bill = {
   id: string;
   name: string;
   amount: number;
   paid: boolean;
   recurring: boolean;
+  recurringKey?: string;
 };
 
-type IncomeItem = {
-  id: string;
-  label: string;
-  amount: number;
+type MonthBudget = {
+  bills: Bill[];
+  notes: string;
 };
 
 type SavingsBucket = {
   id: string;
   name: string;
-  current: number;
+  amount: number;
   target: number;
 };
 
-type GoalItem = {
+type IncomeEntry = {
+  id: string;
+  label: string;
+  amount: number;
+};
+
+type Goal = {
+  id: string;
+  name: string;
+};
+
+type CalendarEntry = {
   id: string;
   text: string;
 };
 
-type CalendarEntries = Record<string, string[]>;
-
-type MonthData = {
-  bills: BillItem[];
-  incomes: IncomeItem[];
-  buckets: SavingsBucket[];
-  goals: GoalItem[];
-  notes: string;
-  calendarEntries: CalendarEntries;
+type CalendarMonth = {
+  [day: string]: CalendarEntry[];
 };
 
-type AppData = Record<string, MonthData>;
-
-type CalendarCell = {
-  dayNumber: number;
-  dateKey: string;
-} | null;
-
-const STORAGE_KEY = "budget-planner-mobile-v1";
-const PASSWORD_STORAGE_KEY = "budget-planner-unlocked";
-const APP_PASSWORD = "budget365"; // change if you want
-
-const COLORS = {
-  bg: "#f8f6f1",
-  panel: "#ffffff",
-  gold: "#e9deb2",
-  goldDark: "#cfbf84",
-  goldBorder: "#e7dcc0",
-  text: "#2f2b24",
-  subtext: "#70685d",
-  shadow: "0 4px 16px rgba(0,0,0,0.03)",
-  danger: "#b75b5b",
-  dangerBg: "#fff5f5",
+type AppData = {
+  monthData: Record<string, MonthBudget>;
+  savingsBuckets: SavingsBucket[];
+  incomesByMonth: Record<string, IncomeEntry[]>;
+  goals: Goal[];
+  calendarByMonth: Record<string, CalendarMonth>;
 };
+
+type ExportPayload = {
+  exportedAt?: string;
+  currentMonth?: string;
+  appData?: AppData;
+};
+
+const STORAGE_KEY = "budget-life-tracker-v3";
+const LEGACY_STORAGE_KEYS = [
+  "budget-life-tracker-v2",
+  "budget-life-tracker-v1",
+];
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
 
 function createId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  return Math.random().toString(36).slice(2, 10);
 }
 
-function emptyMonthData(): MonthData {
-  return {
-    bills: [],
-    incomes: [],
-    buckets: [],
-    goals: [],
-    notes: "",
-    calendarEntries: {},
-  };
-}
-
-function parseMonthKey(monthKey: string) {
-  const [year, month] = monthKey.split("-").map(Number);
-  return { year, month };
-}
-
-function formatMonthKey(date: Date) {
+function getCurrentMonthKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function monthLabelFromKey(monthKey: string) {
-  const { year, month } = parseMonthKey(monthKey);
-  return new Date(year, month - 1, 1).toLocaleDateString("en-US", {
-    month: "long",
-    year: "numeric",
-  });
+function formatMonthLabel(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  return `${MONTH_NAMES[month - 1]} ${year}`;
 }
 
-function shiftMonth(monthKey: string, delta: number) {
-  const { year, month } = parseMonthKey(monthKey);
-  const shifted = new Date(year, month - 1 + delta, 1);
-  return formatMonthKey(shifted);
+function getPreviousMonthKey(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  const d = new Date(year, month - 2, 1);
+  return getCurrentMonthKey(d);
 }
 
-function money(value: number) {
-  return value.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+function getNextMonthKey(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  const d = new Date(year, month, 1);
+  return getCurrentMonthKey(d);
 }
 
-function buildCalendarCells(monthKey: string): CalendarCell[] {
-  const { year, month } = parseMonthKey(monthKey);
-  const firstDay = new Date(year, month - 1, 1);
-  const daysInMonth = new Date(year, month, 0).getDate();
-  const firstWeekday = firstDay.getDay();
-
-  const cells: CalendarCell[] = [];
-
-  for (let i = 0; i < firstWeekday; i += 1) {
-    cells.push(null);
-  }
-
-  for (let day = 1; day <= daysInMonth; day += 1) {
-    cells.push({
-      dayNumber: day,
-      dateKey: `${monthKey}-${String(day).padStart(2, "0")}`,
-    });
-  }
-
-  while (cells.length % 7 !== 0) {
-    cells.push(null);
-  }
-
-  return cells;
+function monthKeyToNumber(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  return year * 12 + month;
 }
 
-function cloneRecurringBillsForward(data: AppData, targetMonth: string): AppData {
-  if (data[targetMonth]) return data;
+function compareMonthKeys(a: string, b: string) {
+  return monthKeyToNumber(a) - monthKeyToNumber(b);
+}
 
-  const prevMonth = shiftMonth(targetMonth, -1);
-  const prevData = data[prevMonth];
+function getDaysInMonth(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  return new Date(year, month, 0).getDate();
+}
 
-  if (!prevData) {
-    return {
-      ...data,
-      [targetMonth]: emptyMonthData(),
-    };
-  }
+function getFirstDayOfMonth(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  return new Date(year, month - 1, 1).getDay();
+}
 
-  const recurringBills = prevData.bills
-    .filter((bill) => bill.recurring)
-    .map((bill) => ({
-      ...bill,
-      id: createId(),
-      paid: false,
-    }));
+function currency(value: number) {
+  return `$${value.toFixed(2)}`;
+}
 
+function safeNumber(input: string) {
+  const num = parseFloat(input);
+  return Number.isFinite(num) ? num : 0;
+}
+
+function isValidMonthKey(value: unknown) {
+  return typeof value === "string" && /^\d{4}-\d{2}$/.test(value);
+}
+
+function defaultData(): AppData {
+  const currentMonth = getCurrentMonthKey();
   return {
-    ...data,
-    [targetMonth]: {
-      ...emptyMonthData(),
-      bills: recurringBills,
+    monthData: {
+      [currentMonth]: {
+        bills: [],
+        notes: "",
+      },
+    },
+    savingsBuckets: [],
+    incomesByMonth: {
+      [currentMonth]: [],
+    },
+    goals: [],
+    calendarByMonth: {
+      [currentMonth]: {},
     },
   };
 }
 
-export default function Page() {
-  const initialMonth = formatMonthKey(new Date());
+function getBillRecurringKey(bill: Bill) {
+  return bill.recurringKey || `legacy-${bill.name}-${bill.amount}`;
+}
 
-  const [mounted, setMounted] = useState(false);
-  const [isUnlocked, setIsUnlocked] = useState(false);
-  const [passwordInput, setPasswordInput] = useState("");
-  const [passwordError, setPasswordError] = useState("");
+function cloneRecurringBillForNewMonth(bill: Bill): Bill {
+  return {
+    id: createId(),
+    name: bill.name,
+    amount: bill.amount,
+    paid: false,
+    recurring: true,
+    recurringKey: getBillRecurringKey(bill),
+  };
+}
 
-  const [activeTab, setActiveTab] = useState<TabKey>("bills");
-  const [currentMonthKey, setCurrentMonthKey] = useState(initialMonth);
-  const [appData, setAppData] = useState<AppData>({
-    [initialMonth]: emptyMonthData(),
+function normalizeData(data: AppData): AppData {
+  const normalizedMonthData: Record<string, MonthBudget> = {};
+
+  Object.entries(data.monthData || {}).forEach(([monthKey, monthBudget]) => {
+    normalizedMonthData[monthKey] = {
+      notes: monthBudget?.notes || "",
+      bills: (monthBudget?.bills || []).map((bill) => ({
+        ...bill,
+        recurringKey: bill.recurring
+          ? bill.recurringKey || `legacy-${bill.name}-${bill.amount}`
+          : bill.recurringKey,
+      })),
+    };
   });
 
-  const [billName, setBillName] = useState("");
-  const [billAmount, setBillAmount] = useState("");
-  const [billRecurring, setBillRecurring] = useState(false);
+  return {
+    monthData: normalizedMonthData,
+    savingsBuckets: (data.savingsBuckets || []).map((bucket) => ({
+      ...bucket,
+      target: typeof bucket.target === "number" ? bucket.target : 0,
+    })),
+    incomesByMonth: data.incomesByMonth || {},
+    goals: (data.goals || []).map((goal) => ({
+      id: goal.id,
+      name: goal.name,
+    })),
+    calendarByMonth: data.calendarByMonth || {},
+  };
+}
 
-  const [incomeLabel, setIncomeLabel] = useState("");
-  const [incomeAmount, setIncomeAmount] = useState("");
+function ensureMonthData(data: AppData, monthKey: string): AppData {
+  const normalized = normalizeData(data);
 
-  const [bucketName, setBucketName] = useState("");
-  const [bucketCurrent, setBucketCurrent] = useState("");
-  const [bucketTarget, setBucketTarget] = useState("");
+  const nextData: AppData = {
+    monthData: { ...normalized.monthData },
+    savingsBuckets: [...normalized.savingsBuckets],
+    incomesByMonth: { ...normalized.incomesByMonth },
+    goals: [...normalized.goals],
+    calendarByMonth: { ...normalized.calendarByMonth },
+  };
 
-  const [goalText, setGoalText] = useState("");
+  if (!nextData.monthData[monthKey]) {
+    nextData.monthData[monthKey] = {
+      bills: [],
+      notes: "",
+    };
+  }
 
-  const [selectedCalendarDay, setSelectedCalendarDay] = useState(`${initialMonth}-01`);
-  const [calendarInput, setCalendarInput] = useState("");
+  if (!nextData.incomesByMonth[monthKey]) {
+    nextData.incomesByMonth[monthKey] = [];
+  }
+
+  if (!nextData.calendarByMonth[monthKey]) {
+    nextData.calendarByMonth[monthKey] = {};
+  }
+
+  const earlierMonths = Object.keys(nextData.monthData)
+    .filter((key) => compareMonthKeys(key, monthKey) < 0)
+    .sort(compareMonthKeys);
+
+  const recurringMap = new Map<string, Bill>();
+
+  for (const earlierMonth of earlierMonths) {
+    const bills = nextData.monthData[earlierMonth]?.bills || [];
+    for (const bill of bills) {
+      if (bill.recurring) {
+        recurringMap.set(getBillRecurringKey(bill), bill);
+      }
+    }
+  }
+
+  const currentBills = nextData.monthData[monthKey].bills || [];
+  const existingRecurringKeys = new Set(
+    currentBills
+      .filter((bill) => bill.recurring)
+      .map((bill) => getBillRecurringKey(bill))
+  );
+
+  const inheritedBills = Array.from(recurringMap.values())
+    .filter((bill) => !existingRecurringKeys.has(getBillRecurringKey(bill)))
+    .map(cloneRecurringBillForNewMonth);
+
+  if (inheritedBills.length > 0) {
+    nextData.monthData[monthKey] = {
+      ...nextData.monthData[monthKey],
+      bills: [...currentBills, ...inheritedBills],
+    };
+  }
+
+  return nextData;
+}
+
+export default function Page() {
+  const [mounted, setMounted] = useState(false);
+
+  const [appData, setAppData] = useState<AppData>(defaultData());
+  const [currentMonth, setCurrentMonth] = useState(getCurrentMonthKey());
+  const [activeTab, setActiveTab] = useState<TabKey>("bills");
+  const [showPaidBills, setShowPaidBills] = useState(false);
+
+  const [newBillName, setNewBillName] = useState("");
+  const [newBillAmount, setNewBillAmount] = useState("");
+  const [newBillRecurring, setNewBillRecurring] = useState(false);
+
+  const [editingBillId, setEditingBillId] = useState<string | null>(null);
+  const [editingBillName, setEditingBillName] = useState("");
+  const [editingBillAmount, setEditingBillAmount] = useState("");
+  const [editingBillRecurring, setEditingBillRecurring] = useState(false);
+
+  const [newIncomeLabel, setNewIncomeLabel] = useState("");
+  const [newIncomeAmount, setNewIncomeAmount] = useState("");
+  const [editingIncomeId, setEditingIncomeId] = useState<string | null>(null);
+  const [editingIncomeLabel, setEditingIncomeLabel] = useState("");
+  const [editingIncomeAmount, setEditingIncomeAmount] = useState("");
+
+  const [newSavingsName, setNewSavingsName] = useState("");
+  const [newSavingsAmount, setNewSavingsAmount] = useState("");
+  const [newSavingsTarget, setNewSavingsTarget] = useState("");
+  const [editingSavingsId, setEditingSavingsId] = useState<string | null>(null);
+  const [editingSavingsName, setEditingSavingsName] = useState("");
+  const [editingSavingsAmount, setEditingSavingsAmount] = useState("");
+  const [editingSavingsTarget, setEditingSavingsTarget] = useState("");
+
+  const [newGoalName, setNewGoalName] = useState("");
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
+  const [editingGoalName, setEditingGoalName] = useState("");
+
+  const [selectedDay, setSelectedDay] = useState<number>(1);
+  const [newCalendarEntry, setNewCalendarEntry] = useState("");
+  const [editingCalendarEntryId, setEditingCalendarEntryId] = useState<string | null>(null);
+  const [editingCalendarEntryText, setEditingCalendarEntryText] = useState("");
+
+  const [celebrateBillsPaid, setCelebrateBillsPaid] = useState(false);
+
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setMounted(true);
 
     try {
-      const unlocked = window.localStorage.getItem(PASSWORD_STORAGE_KEY);
-      if (unlocked === "true") {
-        setIsUnlocked(true);
+      let stored = localStorage.getItem(STORAGE_KEY);
+
+      if (!stored) {
+        for (const legacyKey of LEGACY_STORAGE_KEYS) {
+          const legacyStored = localStorage.getItem(legacyKey);
+          if (legacyStored) {
+            stored = legacyStored;
+            break;
+          }
+        }
       }
 
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-
-      const parsed = JSON.parse(raw) as AppData;
-      const hydrated = cloneRecurringBillsForward(parsed, initialMonth);
-
-      if (!hydrated[initialMonth]) {
-        hydrated[initialMonth] = emptyMonthData();
+      if (stored) {
+        const parsed = JSON.parse(stored) as AppData;
+        const hydrated = ensureMonthData(parsed, getCurrentMonthKey());
+        setAppData(hydrated);
+      } else {
+        setAppData(ensureMonthData(defaultData(), getCurrentMonthKey()));
       }
-
-      setAppData(hydrated);
     } catch {
-      // keep defaults
+      setAppData(ensureMonthData(defaultData(), getCurrentMonthKey()));
     }
-  }, [initialMonth]);
+  }, []);
 
   useEffect(() => {
     if (!mounted) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
   }, [appData, mounted]);
 
   useEffect(() => {
-    setAppData((prev) => cloneRecurringBillsForward(prev, currentMonthKey));
-    setSelectedCalendarDay(`${currentMonthKey}-01`);
-  }, [currentMonthKey]);
-
-  function handleUnlock() {
-    if (passwordInput === APP_PASSWORD) {
-      setIsUnlocked(true);
-      setPasswordError("");
-      window.localStorage.setItem(PASSWORD_STORAGE_KEY, "true");
-    } else {
-      setPasswordError("Incorrect password");
+    if (!mounted) return;
+    setAppData((prev) => ensureMonthData(prev, currentMonth));
+    const days = getDaysInMonth(currentMonth);
+    if (selectedDay > days) {
+      setSelectedDay(days);
     }
+  }, [currentMonth, mounted, selectedDay]);
+
+  const monthBudget = useMemo(() => {
+    return appData.monthData[currentMonth] || { bills: [], notes: "" };
+  }, [appData.monthData, currentMonth]);
+
+  const incomes = useMemo(() => {
+    return appData.incomesByMonth[currentMonth] || [];
+  }, [appData.incomesByMonth, currentMonth]);
+
+  const calendarMonth = useMemo(() => {
+    return appData.calendarByMonth[currentMonth] || {};
+  }, [appData.calendarByMonth, currentMonth]);
+
+  const selectedDayEntries = useMemo(() => {
+    return calendarMonth[String(selectedDay)] || [];
+  }, [calendarMonth, selectedDay]);
+
+  const unpaidBills = monthBudget.bills.filter((b) => !b.paid);
+  const paidBills = monthBudget.bills.filter((b) => b.paid);
+
+  const totalBills = monthBudget.bills.reduce((sum, bill) => sum + bill.amount, 0);
+  const totalPaid = paidBills.reduce((sum, bill) => sum + bill.amount, 0);
+  const totalRemaining = unpaidBills.reduce((sum, bill) => sum + bill.amount, 0);
+  const totalSavings = appData.savingsBuckets.reduce((sum, bucket) => sum + bucket.amount, 0);
+  const totalIncome = incomes.reduce((sum, income) => sum + income.amount, 0);
+
+  useEffect(() => {
+    if (!mounted) return;
+
+    const hasBills = monthBudget.bills.length > 0;
+    const allPaid = hasBills && unpaidBills.length === 0;
+
+    if (allPaid) {
+      setCelebrateBillsPaid(true);
+      const timer = setTimeout(() => setCelebrateBillsPaid(false), 2400);
+      return () => clearTimeout(timer);
+    } else {
+      setCelebrateBillsPaid(false);
+    }
+  }, [monthBudget.bills.length, unpaidBills.length, mounted]);
+
+  function updateAppData(updater: (prev: AppData) => AppData) {
+    setAppData((prev) => updater(ensureMonthData(prev, currentMonth)));
   }
 
-  function handleLogout() {
-    setIsUnlocked(false);
-    setPasswordInput("");
-    window.localStorage.removeItem(PASSWORD_STORAGE_KEY);
-  }
+  function exportData() {
+    const exportPayload: ExportPayload = {
+      exportedAt: new Date().toISOString(),
+      currentMonth,
+      appData,
+    };
 
-  const monthData = appData[currentMonthKey] ?? emptyMonthData();
-  const unpaidBills = monthData.bills.filter((bill) => !bill.paid);
-  const paidBills = monthData.bills.filter((bill) => bill.paid);
-
-  const plannedBillsTotal = monthData.bills.reduce((sum, bill) => sum + bill.amount, 0);
-  const paidBillsTotal = paidBills.reduce((sum, bill) => sum + bill.amount, 0);
-  const remainingBillsTotal = unpaidBills.reduce((sum, bill) => sum + bill.amount, 0);
-  const incomeTotal = monthData.incomes.reduce((sum, item) => sum + item.amount, 0);
-  const savingsTotal = monthData.buckets.reduce((sum, item) => sum + item.current, 0);
-
-  const calendarCells = useMemo(() => buildCalendarCells(currentMonthKey), [currentMonthKey]);
-  const selectedEntries = selectedCalendarDay
-    ? monthData.calendarEntries[selectedCalendarDay] ?? []
-    : [];
-
-  function updateMonthData(updater: (existing: MonthData) => MonthData) {
-    setAppData((prev) => {
-      const ensured = cloneRecurringBillsForward(prev, currentMonthKey);
-      const existing = ensured[currentMonthKey] ?? emptyMonthData();
-
-      return {
-        ...ensured,
-        [currentMonthKey]: updater(existing),
-      };
+    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], {
+      type: "application/json",
     });
+
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `budget-life-tracker-${currentMonth}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
   }
 
-  function goToPreviousMonth() {
-    setCurrentMonthKey((prev) => shiftMonth(prev, -1));
+  function triggerImport() {
+    importInputRef.current?.click();
   }
 
-  function goToNextMonth() {
-    setCurrentMonthKey((prev) => shiftMonth(prev, 1));
+  function handleImportFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      try {
+        const rawText = typeof reader.result === "string" ? reader.result : "";
+        const parsed = JSON.parse(rawText) as ExportPayload | AppData;
+
+        const importedAppData =
+          parsed && typeof parsed === "object" && "appData" in parsed && parsed.appData
+            ? parsed.appData
+            : (parsed as AppData);
+
+        if (
+          !importedAppData ||
+          typeof importedAppData !== "object" ||
+          !("monthData" in importedAppData) ||
+          !("savingsBuckets" in importedAppData) ||
+          !("incomesByMonth" in importedAppData) ||
+          !("goals" in importedAppData) ||
+          !("calendarByMonth" in importedAppData)
+        ) {
+          throw new Error("Invalid import file");
+        }
+
+        const importedMonth =
+          parsed &&
+          typeof parsed === "object" &&
+          "currentMonth" in parsed &&
+          isValidMonthKey(parsed.currentMonth)
+            ? parsed.currentMonth
+            : getCurrentMonthKey();
+
+        const hydrated = ensureMonthData(importedAppData, importedMonth);
+
+        setAppData(hydrated);
+        setCurrentMonth(importedMonth);
+        setSelectedDay(1);
+        setShowPaidBills(false);
+
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(hydrated));
+      } catch {
+        window.alert("Could not import file. Please choose a valid exported JSON file.");
+      } finally {
+        event.target.value = "";
+      }
+    };
+
+    reader.onerror = () => {
+      window.alert("Could not read file. Please try again.");
+      event.target.value = "";
+    };
+
+    reader.readAsText(file);
   }
 
-  function addBill() {
-    if (!billName.trim()) return;
+  function handleAddBill() {
+    if (!newBillName.trim()) return;
 
-    updateMonthData((existing) => ({
-      ...existing,
-      bills: [
-        ...existing.bills,
-        {
-          id: createId(),
-          name: billName.trim(),
-          amount: Number(billAmount) || 0,
-          paid: false,
-          recurring: billRecurring,
+    const recurringKey = newBillRecurring ? createId() : undefined;
+
+    const bill: Bill = {
+      id: createId(),
+      name: newBillName.trim(),
+      amount: safeNumber(newBillAmount),
+      paid: false,
+      recurring: newBillRecurring,
+      recurringKey,
+    };
+
+    updateAppData((prev) => ({
+      ...prev,
+      monthData: {
+        ...prev.monthData,
+        [currentMonth]: {
+          ...prev.monthData[currentMonth],
+          bills: [...prev.monthData[currentMonth].bills, bill],
         },
-      ],
+      },
     }));
 
-    setBillName("");
-    setBillAmount("");
-    setBillRecurring(false);
+    setNewBillName("");
+    setNewBillAmount("");
+    setNewBillRecurring(false);
   }
 
   function toggleBillPaid(id: string) {
-    updateMonthData((existing) => ({
-      ...existing,
-      bills: existing.bills.map((bill) =>
-        bill.id === id ? { ...bill, paid: !bill.paid } : bill
-      ),
+    updateAppData((prev) => ({
+      ...prev,
+      monthData: {
+        ...prev.monthData,
+        [currentMonth]: {
+          ...prev.monthData[currentMonth],
+          bills: prev.monthData[currentMonth].bills.map((bill) =>
+            bill.id === id ? { ...bill, paid: !bill.paid } : bill
+          ),
+        },
+      },
     }));
   }
 
   function deleteBill(id: string) {
-    updateMonthData((existing) => ({
-      ...existing,
-      bills: existing.bills.filter((bill) => bill.id !== id),
+    updateAppData((prev) => ({
+      ...prev,
+      monthData: {
+        ...prev.monthData,
+        [currentMonth]: {
+          ...prev.monthData[currentMonth],
+          bills: prev.monthData[currentMonth].bills.filter((bill) => bill.id !== id),
+        },
+      },
     }));
   }
 
-  function addIncome() {
-    if (!incomeLabel.trim()) return;
+  function startEditBill(bill: Bill) {
+    setEditingBillId(bill.id);
+    setEditingBillName(bill.name);
+    setEditingBillAmount(String(bill.amount));
+    setEditingBillRecurring(bill.recurring);
+  }
 
-    updateMonthData((existing) => ({
-      ...existing,
-      incomes: [
-        ...existing.incomes,
-        {
-          id: createId(),
-          label: incomeLabel.trim(),
-          amount: Number(incomeAmount) || 0,
+  function saveEditBill() {
+    if (!editingBillId || !editingBillName.trim()) return;
+
+    updateAppData((prev) => ({
+      ...prev,
+      monthData: {
+        ...prev.monthData,
+        [currentMonth]: {
+          ...prev.monthData[currentMonth],
+          bills: prev.monthData[currentMonth].bills.map((bill) => {
+            if (bill.id !== editingBillId) return bill;
+
+            const willBeRecurring = editingBillRecurring;
+            const recurringKey = willBeRecurring
+              ? bill.recurringKey || createId()
+              : undefined;
+
+            return {
+              ...bill,
+              name: editingBillName.trim(),
+              amount: safeNumber(editingBillAmount),
+              recurring: willBeRecurring,
+              recurringKey,
+            };
+          }),
         },
-      ],
+      },
     }));
 
-    setIncomeLabel("");
-    setIncomeAmount("");
+    setEditingBillId(null);
+    setEditingBillName("");
+    setEditingBillAmount("");
+    setEditingBillRecurring(false);
+  }
+
+  function handleAddIncome() {
+    if (!newIncomeLabel.trim()) return;
+
+    const item: IncomeEntry = {
+      id: createId(),
+      label: newIncomeLabel.trim(),
+      amount: safeNumber(newIncomeAmount),
+    };
+
+    updateAppData((prev) => ({
+      ...prev,
+      incomesByMonth: {
+        ...prev.incomesByMonth,
+        [currentMonth]: [...(prev.incomesByMonth[currentMonth] || []), item],
+      },
+    }));
+
+    setNewIncomeLabel("");
+    setNewIncomeAmount("");
   }
 
   function deleteIncome(id: string) {
-    updateMonthData((existing) => ({
-      ...existing,
-      incomes: existing.incomes.filter((income) => income.id !== id),
+    updateAppData((prev) => ({
+      ...prev,
+      incomesByMonth: {
+        ...prev.incomesByMonth,
+        [currentMonth]: (prev.incomesByMonth[currentMonth] || []).filter((item) => item.id !== id),
+      },
     }));
   }
 
-  function addBucket() {
-    if (!bucketName.trim()) return;
-
-    updateMonthData((existing) => ({
-      ...existing,
-      buckets: [
-        ...existing.buckets,
-        {
-          id: createId(),
-          name: bucketName.trim(),
-          current: Number(bucketCurrent) || 0,
-          target: Number(bucketTarget) || 0,
-        },
-      ],
-    }));
-
-    setBucketName("");
-    setBucketCurrent("");
-    setBucketTarget("");
+  function startEditIncome(item: IncomeEntry) {
+    setEditingIncomeId(item.id);
+    setEditingIncomeLabel(item.label);
+    setEditingIncomeAmount(String(item.amount));
   }
 
-  function deleteBucket(id: string) {
-    updateMonthData((existing) => ({
-      ...existing,
-      buckets: existing.buckets.filter((bucket) => bucket.id !== id),
+  function saveEditIncome() {
+    if (!editingIncomeId || !editingIncomeLabel.trim()) return;
+
+    updateAppData((prev) => ({
+      ...prev,
+      incomesByMonth: {
+        ...prev.incomesByMonth,
+        [currentMonth]: (prev.incomesByMonth[currentMonth] || []).map((item) =>
+          item.id === editingIncomeId
+            ? {
+                ...item,
+                label: editingIncomeLabel.trim(),
+                amount: safeNumber(editingIncomeAmount),
+              }
+            : item
+        ),
+      },
+    }));
+
+    setEditingIncomeId(null);
+    setEditingIncomeLabel("");
+    setEditingIncomeAmount("");
+  }
+
+  function handleAddSavingsBucket() {
+    if (!newSavingsName.trim()) return;
+
+    const bucket: SavingsBucket = {
+      id: createId(),
+      name: newSavingsName.trim(),
+      amount: safeNumber(newSavingsAmount),
+      target: safeNumber(newSavingsTarget),
+    };
+
+    updateAppData((prev) => ({
+      ...prev,
+      savingsBuckets: [...prev.savingsBuckets, bucket],
+    }));
+
+    setNewSavingsName("");
+    setNewSavingsAmount("");
+    setNewSavingsTarget("");
+  }
+
+  function deleteSavingsBucket(id: string) {
+    updateAppData((prev) => ({
+      ...prev,
+      savingsBuckets: prev.savingsBuckets.filter((bucket) => bucket.id !== id),
     }));
   }
 
-  function addGoal() {
-    if (!goalText.trim()) return;
+  function startEditSavings(bucket: SavingsBucket) {
+    setEditingSavingsId(bucket.id);
+    setEditingSavingsName(bucket.name);
+    setEditingSavingsAmount(String(bucket.amount));
+    setEditingSavingsTarget(String(bucket.target));
+  }
 
-    updateMonthData((existing) => ({
-      ...existing,
-      goals: [...existing.goals, { id: createId(), text: goalText.trim() }],
+  function saveEditSavings() {
+    if (!editingSavingsId || !editingSavingsName.trim()) return;
+
+    updateAppData((prev) => ({
+      ...prev,
+      savingsBuckets: prev.savingsBuckets.map((bucket) =>
+        bucket.id === editingSavingsId
+          ? {
+              ...bucket,
+              name: editingSavingsName.trim(),
+              amount: safeNumber(editingSavingsAmount),
+              target: safeNumber(editingSavingsTarget),
+            }
+          : bucket
+      ),
     }));
 
-    setGoalText("");
+    setEditingSavingsId(null);
+    setEditingSavingsName("");
+    setEditingSavingsAmount("");
+    setEditingSavingsTarget("");
+  }
+
+  function handleAddGoal() {
+    if (!newGoalName.trim()) return;
+
+    const goal: Goal = {
+      id: createId(),
+      name: newGoalName.trim(),
+    };
+
+    updateAppData((prev) => ({
+      ...prev,
+      goals: [...prev.goals, goal],
+    }));
+
+    setNewGoalName("");
   }
 
   function deleteGoal(id: string) {
-    updateMonthData((existing) => ({
-      ...existing,
-      goals: existing.goals.filter((goal) => goal.id !== id),
+    updateAppData((prev) => ({
+      ...prev,
+      goals: prev.goals.filter((goal) => goal.id !== id),
+    }));
+  }
+
+  function startEditGoal(goal: Goal) {
+    setEditingGoalId(goal.id);
+    setEditingGoalName(goal.name);
+  }
+
+  function saveEditGoal() {
+    if (!editingGoalId || !editingGoalName.trim()) return;
+
+    updateAppData((prev) => ({
+      ...prev,
+      goals: prev.goals.map((goal) =>
+        goal.id === editingGoalId
+          ? {
+              ...goal,
+              name: editingGoalName.trim(),
+            }
+          : goal
+      ),
+    }));
+
+    setEditingGoalId(null);
+    setEditingGoalName("");
+  }
+
+  function saveMonthNotes(notes: string) {
+    updateAppData((prev) => ({
+      ...prev,
+      monthData: {
+        ...prev.monthData,
+        [currentMonth]: {
+          ...prev.monthData[currentMonth],
+          notes,
+        },
+      },
     }));
   }
 
   function addCalendarEntry() {
-    if (!selectedCalendarDay || !calendarInput.trim()) return;
+    if (!newCalendarEntry.trim()) return;
 
-    updateMonthData((existing) => ({
-      ...existing,
-      calendarEntries: {
-        ...existing.calendarEntries,
-        [selectedCalendarDay]: [
-          ...(existing.calendarEntries[selectedCalendarDay] ?? []),
-          calendarInput.trim(),
-        ],
+    const dayKey = String(selectedDay);
+    const entry: CalendarEntry = {
+      id: createId(),
+      text: newCalendarEntry.trim(),
+    };
+
+    updateAppData((prev) => ({
+      ...prev,
+      calendarByMonth: {
+        ...prev.calendarByMonth,
+        [currentMonth]: {
+          ...(prev.calendarByMonth[currentMonth] || {}),
+          [dayKey]: [...((prev.calendarByMonth[currentMonth] || {})[dayKey] || []), entry],
+        },
       },
     }));
 
-    setCalendarInput("");
+    setNewCalendarEntry("");
   }
 
-  function deleteCalendarEntry(indexToDelete: number) {
-    if (!selectedCalendarDay) return;
+  function deleteCalendarEntry(entryId: string) {
+    const dayKey = String(selectedDay);
 
-    updateMonthData((existing) => {
-      const currentEntries = existing.calendarEntries[selectedCalendarDay] ?? [];
-      const updatedEntries = currentEntries.filter((_, index) => index !== indexToDelete);
-
-      const nextCalendarEntries = { ...existing.calendarEntries };
-
-      if (updatedEntries.length === 0) {
-        delete nextCalendarEntries[selectedCalendarDay];
-      } else {
-        nextCalendarEntries[selectedCalendarDay] = updatedEntries;
-      }
-
-      return {
-        ...existing,
-        calendarEntries: nextCalendarEntries,
-      };
-    });
-  }
-
-  function updateMonthNotes(value: string) {
-    updateMonthData((existing) => ({
-      ...existing,
-      notes: value,
+    updateAppData((prev) => ({
+      ...prev,
+      calendarByMonth: {
+        ...prev.calendarByMonth,
+        [currentMonth]: {
+          ...(prev.calendarByMonth[currentMonth] || {}),
+          [dayKey]: (((prev.calendarByMonth[currentMonth] || {})[dayKey] || []).filter(
+            (entry) => entry.id !== entryId
+          )),
+        },
+      },
     }));
   }
 
-  const styles: Record<string, React.CSSProperties> = {
-    shell: {
-      minHeight: "100vh",
-      background: COLORS.bg,
-      color: COLORS.text,
-      padding: "20px 16px 36px",
-      maxWidth: 430,
-      margin: "0 auto",
-      fontFamily: "Inter, system-ui, sans-serif",
-    },
-    gateShell: {
-      minHeight: "100vh",
-      background: COLORS.bg,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 20,
-      fontFamily: "Inter, system-ui, sans-serif",
-    },
-    gateCard: {
-      width: "100%",
-      maxWidth: 420,
-      background: COLORS.panel,
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 24,
-      padding: 24,
-      boxShadow: COLORS.shadow,
-    },
-    gateTitle: {
-      fontSize: 28,
-      fontWeight: 800,
-      textAlign: "center",
-      marginBottom: 8,
-      color: COLORS.text,
-    },
-    gateSub: {
-      fontSize: 14,
-      color: COLORS.subtext,
-      textAlign: "center",
-      lineHeight: 1.5,
-      marginBottom: 18,
-    },
-    gateError: {
-      marginTop: 10,
-      color: "#a94442",
-      fontSize: 14,
-      textAlign: "center",
-    },
-    topTitle: {
-      textAlign: "center",
-      fontSize: 26,
-      fontWeight: 800,
-      marginBottom: 18,
-      letterSpacing: -0.4,
-    },
-    monthSwitcher: {
-      width: "100%",
-      display: "flex",
-      justifyContent: "center",
-      alignItems: "center",
-      gap: 14,
-      marginBottom: 16,
-    },
-    monthButton: {
-      width: 48,
-      height: 48,
-      borderRadius: 16,
-      border: `1px solid ${COLORS.goldDark}`,
-      background: COLORS.gold,
-      color: COLORS.text,
-      fontSize: 28,
-      lineHeight: 1,
-      cursor: "pointer",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      boxShadow: COLORS.shadow,
-    },
-    monthLabel: {
-      minWidth: 210,
-      textAlign: "center",
-      background: COLORS.panel,
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 22,
-      padding: "14px 20px",
-      fontSize: 18,
-      fontWeight: 800,
-      boxShadow: COLORS.shadow,
-    },
-    cardGrid: {
-      display: "grid",
-      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-      gap: 14,
-      marginBottom: 16,
-    },
-    statCard: {
-      background: COLORS.panel,
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 22,
-      padding: 18,
-      minHeight: 110,
-      display: "flex",
-      flexDirection: "column",
-      justifyContent: "space-between",
-      boxShadow: COLORS.shadow,
-    },
-    statLabel: {
-      fontSize: 12,
-      fontWeight: 800,
-      letterSpacing: 1.1,
-      textTransform: "uppercase",
-      color: COLORS.subtext,
-    },
-    statValue: {
-      fontSize: 26,
-      fontWeight: 800,
-    },
-    tabs: {
-      display: "flex",
-      justifyContent: "center",
-      alignItems: "center",
-      gap: 10,
-      flexWrap: "nowrap",
-      marginBottom: 18,
-    },
-    tab: {
-      border: "1px solid #38342e",
-      background: COLORS.panel,
-      color: COLORS.text,
-      borderRadius: 18,
-      padding: "12px 16px",
-      fontWeight: 700,
-      fontSize: 15,
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      textAlign: "center",
-    },
-    activeTab: {
-      border: `1px solid ${COLORS.goldDark}`,
-      background: COLORS.gold,
-      color: COLORS.text,
-      borderRadius: 18,
-      padding: "12px 16px",
-      fontWeight: 800,
-      fontSize: 15,
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      textAlign: "center",
-    },
-    stack: {
-      display: "grid",
-      gap: 16,
-    },
-    panel: {
-      background: COLORS.panel,
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 24,
-      padding: 18,
-      boxShadow: COLORS.shadow,
-    },
-    panelTitle: {
-      fontSize: 18,
-      fontWeight: 800,
-      marginBottom: 8,
-    },
-    panelSub: {
-      fontSize: 14,
-      color: COLORS.subtext,
-      lineHeight: 1.45,
-      marginBottom: 14,
-    },
-    sectionDividerRow: {
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-      marginBottom: 12,
-    },
-    sectionDivider: {
-      height: 1,
-      background: COLORS.goldBorder,
-      flex: 1,
-    },
-    sectionDividerText: {
-      fontSize: 12,
-      fontWeight: 800,
-      letterSpacing: 1,
-      color: COLORS.subtext,
-    },
-    inputRow: {
-      display: "grid",
-      gridTemplateColumns: "1fr auto",
-      gap: 10,
-      marginBottom: 14,
-    },
-    input: {
-      width: "100%",
-      border: `1px solid ${COLORS.goldBorder}`,
-      background: "#fffdfa",
-      borderRadius: 18,
-      padding: "14px 16px",
-      fontSize: 16,
-      color: COLORS.text,
-      outline: "none",
-    },
-    primaryButton: {
-      border: `1px solid ${COLORS.goldDark}`,
-      background: COLORS.gold,
-      color: COLORS.text,
-      borderRadius: 18,
-      padding: "14px 22px",
-      fontWeight: 800,
-      fontSize: 16,
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-    },
-    logoutRow: {
-      display: "flex",
-      justifyContent: "flex-end",
-      marginBottom: 14,
-    },
-    billsInputGrid: {
-      display: "grid",
-      gridTemplateColumns: "1.4fr 1fr",
-      gap: 10,
-      marginBottom: 14,
-    },
-    bucketInputGrid: {
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr",
-      gap: 10,
-      marginBottom: 14,
-    },
-    checkboxWrap: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      color: COLORS.subtext,
-      paddingLeft: 4,
-      fontSize: 14,
-    },
-    totalsCard: {
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 22,
-      padding: 16,
-      background: "#fffdfa",
-      marginTop: 2,
-    },
-    totalRow: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      padding: "8px 0",
-      fontSize: 16,
-    },
-    listStack: {
-      display: "grid",
-      gap: 10,
-    },
-    listItem: {
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 18,
-      padding: "12px 14px",
-      background: "#fffdfa",
-      fontSize: 15,
-    },
-    listItemRow: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 18,
-      padding: "12px 14px",
-      background: "#fffdfa",
-      fontSize: 15,
-      gap: 12,
-    },
-    billRow: {
-      display: "grid",
-      gridTemplateColumns: "20px 1fr auto",
-      alignItems: "start",
-      gap: 12,
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 18,
-      padding: "13px 14px",
-      background: "#fffdfa",
-      cursor: "pointer",
-    },
-    billRowPaid: {
-      display: "grid",
-      gridTemplateColumns: "20px 1fr auto",
-      alignItems: "start",
-      gap: 12,
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 18,
-      padding: "13px 14px",
-      background: "#f6f2e8",
-      opacity: 0.82,
-      cursor: "pointer",
-    },
-    billTextWrap: {
-      display: "grid",
-      gap: 4,
-    },
-    billName: {
-      fontSize: 15,
-      fontWeight: 700,
-    },
-    billMeta: {
-      fontSize: 13,
-      color: COLORS.subtext,
-    },
-    detailsBox: {
-      marginTop: 14,
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 18,
-      overflow: "hidden",
-      background: "#fffdfa",
-    },
-    summaryLine: {
-      listStyle: "none",
-      cursor: "pointer",
-      padding: "14px 16px",
-      fontWeight: 800,
-    },
-    detailsContent: {
-      display: "grid",
-      gap: 10,
-      padding: "0 14px 14px",
-    },
-    celebrationBox: {
-      marginTop: 14,
-      background: "#f5efd5",
-      border: `1px solid ${COLORS.goldDark}`,
-      color: COLORS.text,
-      borderRadius: 18,
-      padding: "14px 16px",
-      fontWeight: 800,
-      textAlign: "center",
-    },
-    smallHeading: {
-      fontSize: 12,
-      fontWeight: 800,
-      letterSpacing: 1.2,
-      color: COLORS.subtext,
-      textAlign: "center",
-      marginTop: 18,
-      marginBottom: 12,
-    },
-    bucketCard: {
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 18,
-      padding: 14,
-      background: "#fffdfa",
-      display: "grid",
-      gap: 10,
-    },
-    progressTrack: {
-      width: "100%",
-      height: 10,
-      background: "#f1ece1",
-      borderRadius: 999,
-      overflow: "hidden",
-    },
-    progressFill: {
-      height: "100%",
-      background: COLORS.goldDark,
-      borderRadius: 999,
-    },
-    weekdayRow: {
-      display: "grid",
-      gridTemplateColumns: "repeat(7, 1fr)",
-      gap: 8,
-      marginBottom: 10,
-    },
-    weekdayLabel: {
-      textAlign: "center",
-      fontSize: 12,
-      fontWeight: 800,
-      color: COLORS.subtext,
-      letterSpacing: 1,
-    },
-    calendarGrid: {
-      display: "grid",
-      gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
-      gap: 8,
-    },
-    calendarCell: {
-      minHeight: 92,
-      border: `1px solid ${COLORS.goldBorder}`,
-      borderRadius: 18,
-      background: "#fffdfa",
-      padding: 8,
-      textAlign: "left",
-      cursor: "pointer",
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "stretch",
-      justifyContent: "flex-start",
-    },
-    calendarCellEmpty: {
-      opacity: 0.45,
-      borderStyle: "dashed",
-      cursor: "default",
-      background: "#faf7ef",
-    },
-    calendarCellSelected: {
-      background: "#f5efd5",
-      border: `1px solid ${COLORS.goldDark}`,
-    },
-    calendarCellDate: {
-      fontSize: 14,
-      fontWeight: 800,
-      marginBottom: 6,
-    },
-    calendarCellPreview: {
-      display: "grid",
-      gap: 4,
-    },
-    calendarPreviewLine: {
-      fontSize: 10,
-      color: COLORS.subtext,
-      whiteSpace: "nowrap",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-    },
-    notesArea: {
-      width: "100%",
-      minHeight: 140,
-      border: `1px solid ${COLORS.goldBorder}`,
-      background: "#fffdfa",
-      borderRadius: 18,
-      padding: 16,
-      fontSize: 16,
-      color: COLORS.text,
-      resize: "vertical",
-      outline: "none",
-      fontFamily: "Inter, system-ui, sans-serif",
-      lineHeight: 1.5,
-    },
-    emptyText: {
-      color: COLORS.subtext,
-      fontSize: 15,
-      lineHeight: 1.45,
-    },
-    deleteButton: {
-      border: `1px solid #e7caca`,
-      background: COLORS.dangerBg,
-      color: COLORS.danger,
-      borderRadius: 12,
-      padding: "8px 10px",
-      fontSize: 12,
-      fontWeight: 700,
-      cursor: "pointer",
-      alignSelf: "center",
-      whiteSpace: "nowrap",
-    },
-    itemWithDelete: {
-      display: "grid",
-      gridTemplateColumns: "1fr auto",
-      gap: 10,
-      alignItems: "center",
-    },
-  };
+  function startEditCalendarEntry(entry: CalendarEntry) {
+    setEditingCalendarEntryId(entry.id);
+    setEditingCalendarEntryText(entry.text);
+  }
 
-  function renderBillsTab() {
+  function saveEditCalendarEntry() {
+    if (!editingCalendarEntryId || !editingCalendarEntryText.trim()) return;
+
+    const dayKey = String(selectedDay);
+
+    updateAppData((prev) => ({
+      ...prev,
+      calendarByMonth: {
+        ...prev.calendarByMonth,
+        [currentMonth]: {
+          ...(prev.calendarByMonth[currentMonth] || {}),
+          [dayKey]: (((prev.calendarByMonth[currentMonth] || {})[dayKey] || []).map((entry) =>
+            entry.id === editingCalendarEntryId
+              ? { ...entry, text: editingCalendarEntryText.trim() }
+              : entry
+          )),
+        },
+      },
+    }));
+
+    setEditingCalendarEntryId(null);
+    setEditingCalendarEntryText("");
+  }
+
+  function renderMiniActionButtons(onEdit: () => void, onDelete: () => void) {
     return (
-      <div style={styles.stack}>
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Month Overview</div>
-          <div style={styles.panelSub}>{monthLabelFromKey(currentMonthKey)}</div>
-
-          <div style={styles.sectionDividerRow}>
-            <div style={styles.sectionDivider} />
-            <div style={styles.sectionDividerText}>GOALS</div>
-            <div style={styles.sectionDivider} />
-          </div>
-
-          <div style={styles.inputRow}>
-            <input
-              style={styles.input}
-              placeholder="e.g. Save $1,000 · Spend less eating out"
-              value={goalText}
-              onChange={(e) => setGoalText(e.target.value)}
-            />
-            <button style={styles.primaryButton} onClick={addGoal}>
-              Add
-            </button>
-          </div>
-
-          {monthData.goals.length === 0 ? (
-            <div style={styles.emptyText}>No goals yet.</div>
-          ) : (
-            <div style={styles.listStack}>
-              {monthData.goals.map((goal) => (
-                <div key={goal.id} style={styles.listItem}>
-                  <div style={styles.itemWithDelete}>
-                    <span>{goal.text}</span>
-                    <button
-                      type="button"
-                      style={styles.deleteButton}
-                      onClick={() => deleteGoal(goal.id)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Bills Checklist</div>
-          <div style={styles.panelSub}>Bills do not require dates. Amounts optional.</div>
-
-          <div style={styles.billsInputGrid}>
-            <input
-              style={styles.input}
-              placeholder="Rent, phone, internet..."
-              value={billName}
-              onChange={(e) => setBillName(e.target.value)}
-            />
-            <input
-              style={styles.input}
-              inputMode="decimal"
-              placeholder="$ (optional)"
-              value={billAmount}
-              onChange={(e) => setBillAmount(e.target.value)}
-            />
-            <label style={styles.checkboxWrap}>
-              <input
-                type="checkbox"
-                checked={billRecurring}
-                onChange={(e) => setBillRecurring(e.target.checked)}
-              />
-              recurring
-            </label>
-            <button style={styles.primaryButton} onClick={addBill}>
-              Add
-            </button>
-          </div>
-
-          <div style={styles.totalsCard}>
-            <div style={styles.totalRow}>
-              <span>Planned</span>
-              <strong>{money(plannedBillsTotal)}</strong>
-            </div>
-            <div style={styles.totalRow}>
-              <span>Paid</span>
-              <strong>{money(paidBillsTotal)}</strong>
-            </div>
-            <div style={styles.totalRow}>
-              <span>Remaining</span>
-              <strong>{money(remainingBillsTotal)}</strong>
-            </div>
-          </div>
-
-          <div style={styles.smallHeading}>UNPAID BILLS</div>
-
-          {unpaidBills.length === 0 ? (
-            <div style={styles.emptyText}>No unpaid bills.</div>
-          ) : (
-            <div style={styles.listStack}>
-              {unpaidBills.map((bill) => (
-                <label key={bill.id} style={styles.billRow}>
-                  <input
-                    type="checkbox"
-                    checked={bill.paid}
-                    onChange={() => toggleBillPaid(bill.id)}
-                  />
-                  <div style={styles.billTextWrap}>
-                    <div style={styles.billName}>{bill.name}</div>
-                    <div style={styles.billMeta}>
-                      {bill.amount ? money(bill.amount) : "No amount"}
-                      {bill.recurring ? " · recurring" : ""}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    style={styles.deleteButton}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      deleteBill(bill.id);
-                    }}
-                  >
-                    Delete
-                  </button>
-                </label>
-              ))}
-            </div>
-          )}
-
-          <details style={styles.detailsBox}>
-            <summary style={styles.summaryLine}>Paid Bills ({paidBills.length})</summary>
-            <div style={styles.detailsContent}>
-              {paidBills.length === 0 ? (
-                <div style={styles.emptyText}>No paid bills yet.</div>
-              ) : (
-                paidBills.map((bill) => (
-                  <label key={bill.id} style={styles.billRowPaid}>
-                    <input
-                      type="checkbox"
-                      checked={bill.paid}
-                      onChange={() => toggleBillPaid(bill.id)}
-                    />
-                    <div style={styles.billTextWrap}>
-                      <div style={styles.billName}>{bill.name}</div>
-                      <div style={styles.billMeta}>
-                        {bill.amount ? money(bill.amount) : "No amount"}
-                        {bill.recurring ? " · recurring" : ""}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      style={styles.deleteButton}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        deleteBill(bill.id);
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </label>
-                ))
-              )}
-            </div>
-          </details>
-
-          {unpaidBills.length === 0 && monthData.bills.length > 0 ? (
-            <div style={styles.celebrationBox}>
-              ✨ All bills paid for {monthLabelFromKey(currentMonthKey)}!
-            </div>
-          ) : null}
-        </div>
+      <div style={styles.inlineActions}>
+        <button style={styles.plusButton} onClick={onEdit} type="button">
+          +
+        </button>
+        <button style={styles.minusButton} onClick={onDelete} type="button">
+          −
+        </button>
       </div>
     );
   }
 
-  function renderBudgetTab() {
+  function renderCelebration() {
+    if (!celebrateBillsPaid) return null;
+
     return (
-      <div style={styles.stack}>
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Income</div>
-          <div style={styles.panelSub}>Track monthly income entries.</div>
-
-          <div style={styles.inputRow}>
-            <input
-              style={styles.input}
-              placeholder="Paycheck, side income..."
-              value={incomeLabel}
-              onChange={(e) => setIncomeLabel(e.target.value)}
-            />
-            <input
-              style={styles.input}
-              inputMode="decimal"
-              placeholder="$ amount"
-              value={incomeAmount}
-              onChange={(e) => setIncomeAmount(e.target.value)}
-            />
-            <button style={styles.primaryButton} onClick={addIncome}>
-              Add
-            </button>
-          </div>
-
-          {monthData.incomes.length === 0 ? (
-            <div style={styles.emptyText}>None yet.</div>
-          ) : (
-            <div style={styles.listStack}>
-              {monthData.incomes.map((income) => (
-                <div key={income.id} style={styles.listItemRow}>
-                  <span>{income.label}</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <strong>{money(income.amount)}</strong>
-                    <button
-                      type="button"
-                      style={styles.deleteButton}
-                      onClick={() => deleteIncome(income.id)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+      <div style={styles.celebrationCard}>
+        <div style={styles.celebrationEmojiRow}>
+          <span style={styles.celebrationEmoji}>✨</span>
+          <span style={styles.celebrationEmoji}>💸</span>
+          <span style={styles.celebrationEmoji}>✨</span>
         </div>
-
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Savings Buckets</div>
-          <div style={styles.panelSub}>Track progress toward simple savings goals.</div>
-
-          <div style={styles.bucketInputGrid}>
-            <input
-              style={styles.input}
-              placeholder="Emergency fund"
-              value={bucketName}
-              onChange={(e) => setBucketName(e.target.value)}
-            />
-            <input
-              style={styles.input}
-              inputMode="decimal"
-              placeholder="$ current"
-              value={bucketCurrent}
-              onChange={(e) => setBucketCurrent(e.target.value)}
-            />
-            <input
-              style={styles.input}
-              inputMode="decimal"
-              placeholder="$ target"
-              value={bucketTarget}
-              onChange={(e) => setBucketTarget(e.target.value)}
-            />
-            <button style={styles.primaryButton} onClick={addBucket}>
-              Add
-            </button>
-          </div>
-
-          {monthData.buckets.length === 0 ? (
-            <div style={styles.emptyText}>None yet.</div>
-          ) : (
-            <div style={styles.listStack}>
-              {monthData.buckets.map((bucket) => {
-                const progress =
-                  bucket.target > 0
-                    ? Math.min(100, (bucket.current / bucket.target) * 100)
-                    : 0;
-
-                return (
-                  <div key={bucket.id} style={styles.bucketCard}>
-                    <div style={styles.listItemRow}>
-                      <span>{bucket.name}</span>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <strong>
-                          {money(bucket.current)} / {money(bucket.target)}
-                        </strong>
-                        <button
-                          type="button"
-                          style={styles.deleteButton}
-                          onClick={() => deleteBucket(bucket.id)}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                    <div style={styles.progressTrack}>
-                      <div style={{ ...styles.progressFill, width: `${progress}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        <div style={styles.celebrationTitle}>All bills are paid!</div>
+        <div style={styles.celebrationSubtext}>Nice work. This month is handled.</div>
       </div>
     );
   }
 
-  function renderCalendarTab() {
-    return (
-      <div style={styles.stack}>
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Calendar</div>
-          <div style={styles.panelSub}>
-            Add work shifts, appointments, deadlines, or reminders for each day.
-          </div>
+  function renderCalendarGrid() {
+    const daysInMonth = getDaysInMonth(currentMonth);
+    const firstDay = getFirstDayOfMonth(currentMonth);
+    const cells: React.ReactNode[] = [];
 
-          <div style={styles.weekdayRow}>
-            {["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map((day) => (
-              <div key={day} style={styles.weekdayLabel}>
-                {day}
+    for (let i = 0; i < firstDay; i++) {
+      cells.push(<div key={`empty-${i}`} style={styles.calendarEmptyCell} />);
+    }
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayEntries = calendarMonth[String(day)] || [];
+      const isSelected = selectedDay === day;
+
+      cells.push(
+        <button
+          key={day}
+          type="button"
+          onClick={() => setSelectedDay(day)}
+          style={{
+            ...styles.calendarDayCell,
+            ...(isSelected ? styles.calendarDayCellSelected : {}),
+          }}
+        >
+          <div style={styles.calendarDayNumber}>{day}</div>
+
+          <div style={styles.calendarPreviewWrap}>
+            {dayEntries.slice(0, 2).map((entry) => (
+              <div key={entry.id} style={styles.calendarPreviewText}>
+                {entry.text}
               </div>
             ))}
+            {dayEntries.length > 2 && (
+              <div style={styles.calendarMoreText}>+{dayEntries.length - 2} more</div>
+            )}
           </div>
+        </button>
+      );
+    }
 
-          <div style={styles.calendarGrid}>
-            {calendarCells.map((cell, index) => {
-              const isEmpty = !cell;
-              const isSelected = cell?.dateKey === selectedCalendarDay;
-              const preview = cell ? monthData.calendarEntries[cell.dateKey] ?? [] : [];
-
-              return (
-                <button
-                  key={cell?.dateKey ?? `empty-${index}`}
-                  type="button"
-                  disabled={isEmpty}
-                  onClick={() => {
-                    if (cell) setSelectedCalendarDay(cell.dateKey);
-                  }}
-                  style={{
-                    ...styles.calendarCell,
-                    ...(isEmpty ? styles.calendarCellEmpty : {}),
-                    ...(isSelected ? styles.calendarCellSelected : {}),
-                  }}
-                >
-                  {cell ? (
-                    <>
-                      <div style={styles.calendarCellDate}>{cell.dayNumber}</div>
-                      <div style={styles.calendarCellPreview}>
-                        {preview.slice(0, 2).map((entry, i) => (
-                          <div key={i} style={styles.calendarPreviewLine}>
-                            {entry}
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Selected Day: {selectedCalendarDay}</div>
-          <div style={styles.panelSub}>
-            Add short notes like work, appointment, payday, or project due.
-          </div>
-
-          <div style={styles.inputRow}>
-            <input
-              style={styles.input}
-              placeholder="Add entry..."
-              value={calendarInput}
-              onChange={(e) => setCalendarInput(e.target.value)}
-            />
-            <button style={styles.primaryButton} onClick={addCalendarEntry}>
-              Add
-            </button>
-          </div>
-
-          {selectedEntries.length === 0 ? (
-            <div style={styles.emptyText}>No entries for this day yet.</div>
-          ) : (
-            <div style={styles.listStack}>
-              {selectedEntries.map((entry, index) => (
-                <div key={`${selectedCalendarDay}-${index}`} style={styles.listItem}>
-                  <div style={styles.itemWithDelete}>
-                    <span>{entry}</span>
-                    <button
-                      type="button"
-                      style={styles.deleteButton}
-                      onClick={() => deleteCalendarEntry(index)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div style={styles.panel}>
-          <div style={styles.panelTitle}>Month Notes</div>
-          <textarea
-            style={styles.notesArea}
-            placeholder="Month notes, payday reminders, work schedule, project notes, or anything you want to remember..."
-            value={monthData.notes}
-            onChange={(e) => updateMonthNotes(e.target.value)}
-          />
-        </div>
-      </div>
-    );
+    return <div style={styles.calendarGrid}>{cells}</div>;
   }
 
   if (!mounted) {
-    return <div style={{ background: COLORS.bg, minHeight: "100vh" }} />;
-  }
-
-  if (!isUnlocked) {
-    return (
-      <div style={styles.gateShell}>
-        <div style={styles.gateCard}>
-          <div style={styles.gateTitle}>Budget Tracker</div>
-          <div style={styles.gateSub}>Enter your password to open the app.</div>
-
-          <input
-            type="password"
-            style={styles.input}
-            placeholder="Enter password"
-            value={passwordInput}
-            onChange={(e) => {
-              setPasswordInput(e.target.value);
-              if (passwordError) setPasswordError("");
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleUnlock();
-            }}
-          />
-
-          <div style={{ marginTop: 14 }}>
-            <button style={{ ...styles.primaryButton, width: "100%" }} onClick={handleUnlock}>
-              Unlock
-            </button>
-          </div>
-
-          {passwordError ? <div style={styles.gateError}>{passwordError}</div> : null}
-        </div>
-      </div>
-    );
+    return <div style={styles.page} />;
   }
 
   return (
-    <div style={styles.shell}>
-      <div style={styles.logoutRow}>
-        <button style={styles.deleteButton} onClick={handleLogout}>
-          Lock App
-        </button>
+    <div style={styles.page}>
+      <div style={styles.appShell}>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept="application/json,.json"
+          onChange={handleImportFile}
+          style={styles.hiddenFileInput}
+        />
+
+        <div style={styles.topBar}>
+          <div style={styles.topBarSide} />
+          <div style={styles.topBarCenter}>
+            <h1 style={styles.mainTitle}>Budget &amp; Life Tracker</h1>
+          </div>
+          <div style={styles.topBarSideRight}>
+            <div style={styles.topBarButtons}>
+              <button style={styles.exportButton} onClick={exportData} type="button">
+                Export
+              </button>
+              <button style={styles.exportButton} onClick={triggerImport} type="button">
+                Import
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div style={styles.monthHeroCard}>
+          <button
+            type="button"
+            onClick={() => setCurrentMonth(getPreviousMonthKey(currentMonth))}
+            style={styles.monthArrow}
+          >
+            ←
+          </button>
+
+          <div style={styles.monthCenterWrap}>
+            <div style={styles.monthBigLabel}>{formatMonthLabel(currentMonth)}</div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setCurrentMonth(getNextMonthKey(currentMonth))}
+            style={styles.monthArrow}
+          >
+            →
+          </button>
+        </div>
+
+        {renderCelebration()}
+
+        <div style={styles.summaryGrid}>
+          <div style={styles.summaryCard}>
+            <div style={styles.summaryLabel}>Bills Remaining</div>
+            <div style={styles.summaryValue}>{currency(totalRemaining)}</div>
+          </div>
+          <div style={styles.summaryCard}>
+            <div style={styles.summaryLabel}>Paid This Month</div>
+            <div style={styles.summaryValue}>{currency(totalPaid)}</div>
+          </div>
+          <div style={styles.summaryCard}>
+            <div style={styles.summaryLabel}>Savings Total</div>
+            <div style={styles.summaryValue}>{currency(totalSavings)}</div>
+          </div>
+        </div>
+
+        <div style={styles.tabBar}>
+          <button
+            type="button"
+            onClick={() => setActiveTab("bills")}
+            style={{
+              ...styles.tabButton,
+              ...(activeTab === "bills" ? styles.tabButtonActive : {}),
+            }}
+          >
+            Bills
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("budget")}
+            style={{
+              ...styles.tabButton,
+              ...(activeTab === "budget" ? styles.tabButtonActive : {}),
+            }}
+          >
+            Budget &amp; Savings
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("calendar")}
+            style={{
+              ...styles.tabButton,
+              ...(activeTab === "calendar" ? styles.tabButtonActive : {}),
+            }}
+          >
+            Calendar
+          </button>
+        </div>
+
+        {activeTab === "bills" && (
+          <div style={styles.sectionStack}>
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <h2 style={styles.sectionTitle}>Add Bill</h2>
+                <div style={styles.sectionMiniTotal}>Total: {currency(totalBills)}</div>
+              </div>
+
+              <div style={styles.formStack}>
+                <input
+                  style={styles.input}
+                  placeholder="Bill name"
+                  value={newBillName}
+                  onChange={(e) => setNewBillName(e.target.value)}
+                />
+                <input
+                  style={styles.input}
+                  placeholder="Amount"
+                  inputMode="decimal"
+                  value={newBillAmount}
+                  onChange={(e) => setNewBillAmount(e.target.value)}
+                />
+                <label style={styles.checkboxRow}>
+                  <input
+                    type="checkbox"
+                    checked={newBillRecurring}
+                    onChange={(e) => setNewBillRecurring(e.target.checked)}
+                  />
+                  <span>Recurring bill</span>
+                </label>
+                <button type="button" onClick={handleAddBill} style={styles.primaryButton}>
+                  Add Bill
+                </button>
+              </div>
+            </section>
+
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <h2 style={styles.sectionTitle}>Unpaid Bills</h2>
+              </div>
+
+              {unpaidBills.length === 0 ? (
+                <div style={styles.emptyText}>No unpaid bills for this month.</div>
+              ) : (
+                unpaidBills.map((bill) => (
+                  <div key={bill.id} style={styles.listRow}>
+                    {editingBillId === bill.id ? (
+                      <div style={styles.editStack}>
+                        <input
+                          style={styles.input}
+                          value={editingBillName}
+                          onChange={(e) => setEditingBillName(e.target.value)}
+                        />
+                        <input
+                          style={styles.input}
+                          inputMode="decimal"
+                          value={editingBillAmount}
+                          onChange={(e) => setEditingBillAmount(e.target.value)}
+                        />
+                        <label style={styles.checkboxRow}>
+                          <input
+                            type="checkbox"
+                            checked={editingBillRecurring}
+                            onChange={(e) => setEditingBillRecurring(e.target.checked)}
+                          />
+                          <span>Recurring bill</span>
+                        </label>
+                        <button type="button" style={styles.primaryButton} onClick={saveEditBill}>
+                          Save Bill
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <label style={styles.billCheckWrap}>
+                          <input
+                            type="checkbox"
+                            checked={bill.paid}
+                            onChange={() => toggleBillPaid(bill.id)}
+                          />
+                        </label>
+
+                        <div style={styles.flexGrow}>
+                          <div style={styles.rowTitle}>{bill.name}</div>
+                          <div style={styles.rowSubtle}>
+                            {currency(bill.amount)}
+                            {bill.recurring ? " • Recurring" : ""}
+                          </div>
+                        </div>
+
+                        {renderMiniActionButtons(
+                          () => startEditBill(bill),
+                          () => deleteBill(bill.id)
+                        )}
+                      </>
+                    )}
+                  </div>
+                ))
+              )}
+            </section>
+
+            <section style={styles.card}>
+              <button
+                type="button"
+                onClick={() => setShowPaidBills((prev) => !prev)}
+                style={styles.collapseButton}
+              >
+                {showPaidBills ? "Hide Paid Bills" : `Show Paid Bills (${paidBills.length})`}
+              </button>
+
+              {showPaidBills && (
+                <div style={{ marginTop: 12 }}>
+                  {paidBills.length === 0 ? (
+                    <div style={styles.emptyText}>No paid bills yet.</div>
+                  ) : (
+                    paidBills.map((bill) => (
+                      <div key={bill.id} style={styles.listRow}>
+                        {editingBillId === bill.id ? (
+                          <div style={styles.editStack}>
+                            <input
+                              style={styles.input}
+                              value={editingBillName}
+                              onChange={(e) => setEditingBillName(e.target.value)}
+                            />
+                            <input
+                              style={styles.input}
+                              inputMode="decimal"
+                              value={editingBillAmount}
+                              onChange={(e) => setEditingBillAmount(e.target.value)}
+                            />
+                            <label style={styles.checkboxRow}>
+                              <input
+                                type="checkbox"
+                                checked={editingBillRecurring}
+                                onChange={(e) => setEditingBillRecurring(e.target.checked)}
+                              />
+                              <span>Recurring bill</span>
+                            </label>
+                            <button
+                              type="button"
+                              style={styles.primaryButton}
+                              onClick={saveEditBill}
+                            >
+                              Save Bill
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <label style={styles.billCheckWrap}>
+                              <input
+                                type="checkbox"
+                                checked={bill.paid}
+                                onChange={() => toggleBillPaid(bill.id)}
+                              />
+                            </label>
+
+                            <div style={styles.flexGrow}>
+                              <div style={{ ...styles.rowTitle, textDecoration: "line-through" }}>
+                                {bill.name}
+                              </div>
+                              <div style={styles.rowSubtle}>
+                                {currency(bill.amount)}
+                                {bill.recurring ? " • Recurring" : ""}
+                              </div>
+                            </div>
+
+                            {renderMiniActionButtons(
+                              () => startEditBill(bill),
+                              () => deleteBill(bill.id)
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </section>
+
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <h2 style={styles.sectionTitle}>Month Notes</h2>
+              </div>
+              <textarea
+                style={styles.textarea}
+                placeholder="Write notes for this month..."
+                value={monthBudget.notes}
+                onChange={(e) => saveMonthNotes(e.target.value)}
+              />
+            </section>
+          </div>
+        )}
+
+        {activeTab === "budget" && (
+          <div style={styles.sectionStack}>
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <h2 style={styles.sectionTitle}>Income</h2>
+                <div style={styles.sectionMiniTotal}>{currency(totalIncome)}</div>
+              </div>
+
+              <div style={styles.formStack}>
+                <input
+                  style={styles.input}
+                  placeholder="Income label"
+                  value={newIncomeLabel}
+                  onChange={(e) => setNewIncomeLabel(e.target.value)}
+                />
+                <input
+                  style={styles.input}
+                  placeholder="Amount"
+                  inputMode="decimal"
+                  value={newIncomeAmount}
+                  onChange={(e) => setNewIncomeAmount(e.target.value)}
+                />
+                <button type="button" onClick={handleAddIncome} style={styles.primaryButton}>
+                  Add Income
+                </button>
+              </div>
+
+              <div style={styles.listWrap}>
+                {incomes.length === 0 ? (
+                  <div style={styles.emptyText}>No income added for this month.</div>
+                ) : (
+                  incomes.map((item) => (
+                    <div key={item.id} style={styles.listRow}>
+                      {editingIncomeId === item.id ? (
+                        <div style={styles.editStack}>
+                          <input
+                            style={styles.input}
+                            value={editingIncomeLabel}
+                            onChange={(e) => setEditingIncomeLabel(e.target.value)}
+                          />
+                          <input
+                            style={styles.input}
+                            inputMode="decimal"
+                            value={editingIncomeAmount}
+                            onChange={(e) => setEditingIncomeAmount(e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            style={styles.primaryButton}
+                            onClick={saveEditIncome}
+                          >
+                            Save Income
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div style={styles.flexGrow}>
+                            <div style={styles.rowTitle}>{item.label}</div>
+                            <div style={styles.rowSubtle}>{currency(item.amount)}</div>
+                          </div>
+                          {renderMiniActionButtons(
+                            () => startEditIncome(item),
+                            () => deleteIncome(item.id)
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <h2 style={styles.sectionTitle}>Savings Buckets</h2>
+                <div style={styles.sectionMiniTotal}>{currency(totalSavings)}</div>
+              </div>
+
+              <div style={styles.formStack}>
+                <input
+                  style={styles.input}
+                  placeholder="Savings bucket"
+                  value={newSavingsName}
+                  onChange={(e) => setNewSavingsName(e.target.value)}
+                />
+                <input
+                  style={styles.input}
+                  placeholder="Amount"
+                  inputMode="decimal"
+                  value={newSavingsAmount}
+                  onChange={(e) => setNewSavingsAmount(e.target.value)}
+                />
+                <input
+                  style={styles.input}
+                  placeholder="Target amount"
+                  inputMode="decimal"
+                  value={newSavingsTarget}
+                  onChange={(e) => setNewSavingsTarget(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={handleAddSavingsBucket}
+                  style={styles.primaryButton}
+                >
+                  Add Savings Bucket
+                </button>
+              </div>
+
+              <div style={styles.listWrap}>
+                {appData.savingsBuckets.length === 0 ? (
+                  <div style={styles.emptyText}>No savings buckets yet.</div>
+                ) : (
+                  appData.savingsBuckets.map((bucket) => (
+                    <div key={bucket.id} style={styles.listRow}>
+                      {editingSavingsId === bucket.id ? (
+                        <div style={styles.editStack}>
+                          <input
+                            style={styles.input}
+                            value={editingSavingsName}
+                            onChange={(e) => setEditingSavingsName(e.target.value)}
+                          />
+                          <input
+                            style={styles.input}
+                            inputMode="decimal"
+                            value={editingSavingsAmount}
+                            onChange={(e) => setEditingSavingsAmount(e.target.value)}
+                          />
+                          <input
+                            style={styles.input}
+                            inputMode="decimal"
+                            value={editingSavingsTarget}
+                            onChange={(e) => setEditingSavingsTarget(e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            style={styles.primaryButton}
+                            onClick={saveEditSavings}
+                          >
+                            Save Bucket
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div style={styles.flexGrow}>
+                            <div style={styles.rowTitle}>{bucket.name}</div>
+                            <div style={styles.rowSubtle}>{currency(bucket.amount)}</div>
+                            <div style={styles.rowSubtle}>Target: {currency(bucket.target)}</div>
+                          </div>
+                          {renderMiniActionButtons(
+                            () => startEditSavings(bucket),
+                            () => deleteSavingsBucket(bucket.id)
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <h2 style={styles.sectionTitle}>Goals</h2>
+              </div>
+
+              <div style={styles.formStack}>
+                <input
+                  style={styles.input}
+                  placeholder="Goal name"
+                  value={newGoalName}
+                  onChange={(e) => setNewGoalName(e.target.value)}
+                />
+                <button type="button" onClick={handleAddGoal} style={styles.primaryButton}>
+                  Add Goal
+                </button>
+              </div>
+
+              <div style={styles.listWrap}>
+                {appData.goals.length === 0 ? (
+                  <div style={styles.emptyText}>No goals added yet.</div>
+                ) : (
+                  appData.goals.map((goal) => (
+                    <div key={goal.id} style={styles.listRow}>
+                      {editingGoalId === goal.id ? (
+                        <div style={styles.editStack}>
+                          <input
+                            style={styles.input}
+                            value={editingGoalName}
+                            onChange={(e) => setEditingGoalName(e.target.value)}
+                          />
+                          <button type="button" style={styles.primaryButton} onClick={saveEditGoal}>
+                            Save Goal
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div style={styles.flexGrow}>
+                            <div style={styles.rowTitle}>{goal.name}</div>
+                          </div>
+                          {renderMiniActionButtons(
+                            () => startEditGoal(goal),
+                            () => deleteGoal(goal.id)
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {activeTab === "calendar" && (
+          <div style={styles.sectionStack}>
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <h2 style={styles.sectionTitle}>Calendar</h2>
+              </div>
+
+              <div style={styles.calendarWeekHeader}>
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+                  <div key={day} style={styles.weekDay}>
+                    {day}
+                  </div>
+                ))}
+              </div>
+
+              {renderCalendarGrid()}
+            </section>
+
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <h2 style={styles.sectionTitle}>
+                  Entries for {formatMonthLabel(currentMonth)} {selectedDay}
+                </h2>
+              </div>
+
+              <div style={styles.formStack}>
+                <input
+                  style={styles.input}
+                  placeholder="Add calendar entry"
+                  value={newCalendarEntry}
+                  onChange={(e) => setNewCalendarEntry(e.target.value)}
+                />
+                <button type="button" onClick={addCalendarEntry} style={styles.primaryButton}>
+                  Add Entry
+                </button>
+              </div>
+
+              <div style={styles.listWrap}>
+                {selectedDayEntries.length === 0 ? (
+                  <div style={styles.emptyText}>No entries for this day.</div>
+                ) : (
+                  selectedDayEntries.map((entry) => (
+                    <div key={entry.id} style={styles.listRow}>
+                      {editingCalendarEntryId === entry.id ? (
+                        <div style={styles.editStack}>
+                          <input
+                            style={styles.input}
+                            value={editingCalendarEntryText}
+                            onChange={(e) => setEditingCalendarEntryText(e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            style={styles.primaryButton}
+                            onClick={saveEditCalendarEntry}
+                          >
+                            Save Entry
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div style={styles.flexGrow}>
+                            <div style={styles.rowTitle}>{entry.text}</div>
+                          </div>
+                          {renderMiniActionButtons(
+                            () => startEditCalendarEntry(entry),
+                            () => deleteCalendarEntry(entry.id)
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <h2 style={styles.sectionTitle}>Month Notes</h2>
+              </div>
+              <textarea
+                style={styles.textarea}
+                placeholder="Write notes for this month..."
+                value={monthBudget.notes}
+                onChange={(e) => saveMonthNotes(e.target.value)}
+              />
+            </section>
+          </div>
+        )}
+
+        <div style={{ height: 26 }} />
       </div>
-
-      <div style={styles.topTitle}>Bill Reminder + Budget Tracker</div>
-
-      <div style={styles.monthSwitcher}>
-        <button style={styles.monthButton} onClick={goToPreviousMonth}>
-          ‹
-        </button>
-        <div style={styles.monthLabel}>{monthLabelFromKey(currentMonthKey)}</div>
-        <button style={styles.monthButton} onClick={goToNextMonth}>
-          ›
-        </button>
-      </div>
-
-      <div style={styles.cardGrid}>
-        <div style={styles.statCard}>
-          <div style={styles.statLabel}>Planned Bills</div>
-          <div style={styles.statValue}>{money(plannedBillsTotal)}</div>
-        </div>
-
-        <div style={styles.statCard}>
-          <div style={styles.statLabel}>Paid</div>
-          <div style={styles.statValue}>{money(paidBillsTotal)}</div>
-        </div>
-
-        <div style={styles.statCard}>
-          <div style={styles.statLabel}>Remaining</div>
-          <div style={styles.statValue}>{money(remainingBillsTotal)}</div>
-        </div>
-
-        <div style={styles.statCard}>
-          <div style={styles.statLabel}>Income</div>
-          <div style={styles.statValue}>{money(incomeTotal)}</div>
-        </div>
-
-        <div style={{ ...styles.statCard, gridColumn: "1 / -1" }}>
-          <div style={styles.statLabel}>Savings</div>
-          <div style={styles.statValue}>{money(savingsTotal)}</div>
-        </div>
-      </div>
-
-      <div style={styles.tabs}>
-        <button
-          style={activeTab === "bills" ? styles.activeTab : styles.tab}
-          onClick={() => setActiveTab("bills")}
-        >
-          Bills
-        </button>
-
-        <button
-          style={activeTab === "budget" ? styles.activeTab : styles.tab}
-          onClick={() => setActiveTab("budget")}
-        >
-          Budget & Savings
-        </button>
-
-        <button
-          style={activeTab === "calendar" ? styles.activeTab : styles.tab}
-          onClick={() => setActiveTab("calendar")}
-        >
-          Calendar
-        </button>
-      </div>
-
-      {activeTab === "bills" && renderBillsTab()}
-      {activeTab === "budget" && renderBudgetTab()}
-      {activeTab === "calendar" && renderCalendarTab()}
     </div>
   );
 }
+
+const styles: Record<string, React.CSSProperties> = {
+  page: {
+    minHeight: "100vh",
+    background: "#f7f6f1",
+    display: "flex",
+    justifyContent: "center",
+    padding: "18px 12px 30px",
+    boxSizing: "border-box",
+  },
+
+  appShell: {
+    width: "100%",
+    maxWidth: 430,
+  },
+
+  hiddenFileInput: {
+    display: "none",
+  },
+
+  topBar: {
+    display: "grid",
+    gridTemplateColumns: "1fr auto auto",
+    alignItems: "center",
+    marginBottom: 12,
+    minHeight: 42,
+  },
+
+  topBarSide: {
+    minWidth: 0,
+  },
+
+  topBarCenter: {
+    display: "flex",
+    justifyContent: "center",
+  },
+
+  topBarSideRight: {
+    display: "flex",
+    justifyContent: "flex-end",
+  },
+
+  topBarButtons: {
+    display: "flex",
+    gap: 6,
+    alignItems: "center",
+    marginLeft: 10,
+  },
+
+  mainTitle: {
+    margin: 0,
+    fontSize: 24,
+    fontWeight: 800,
+    color: "#141414",
+    letterSpacing: "-0.02em",
+    textAlign: "center",
+    whiteSpace: "nowrap",
+  },
+
+  exportButton: {
+    height: 32,
+    padding: "0 8px",
+    borderRadius: 12,
+    border: "1px solid #e8dfc8",
+    background: "#faf8ef",
+    color: "#3d392f",
+    fontWeight: 700,
+    fontSize: 11,
+    cursor: "pointer",
+    boxShadow: "0 6px 14px rgba(0,0,0,0.04)",
+  },
+
+  monthHeroCard: {
+    background: "#ffffff",
+    borderRadius: 24,
+    padding: 14,
+    boxShadow: "0 10px 24px rgba(0,0,0,0.05)",
+    border: "1px solid #efeada",
+    display: "grid",
+    gridTemplateColumns: "52px 1fr 52px",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 14,
+  },
+
+  monthArrow: {
+    width: 44,
+    height: 44,
+    borderRadius: 16,
+    border: "1px solid #e8e2cf",
+    background: "#faf8ef",
+    cursor: "pointer",
+    fontSize: 20,
+    fontWeight: 800,
+    color: "#3f3a30",
+    justifySelf: "center",
+  },
+
+  monthCenterWrap: {
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  monthBigLabel: {
+    fontSize: 28,
+    fontWeight: 800,
+    color: "#141414",
+    textAlign: "center",
+    letterSpacing: "-0.02em",
+    lineHeight: 1.1,
+  },
+
+  celebrationCard: {
+    background: "linear-gradient(180deg, #fffdf7 0%, #f7f2df 100%)",
+    borderRadius: 22,
+    padding: 18,
+    boxShadow: "0 10px 24px rgba(0,0,0,0.05)",
+    border: "1px solid #ece2bc",
+    textAlign: "center",
+    marginBottom: 14,
+  },
+
+  celebrationEmojiRow: {
+    display: "flex",
+    justifyContent: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+
+  celebrationEmoji: {
+    fontSize: 20,
+  },
+
+  celebrationTitle: {
+    fontSize: 20,
+    fontWeight: 800,
+    color: "#2f2a20",
+    marginBottom: 4,
+  },
+
+  celebrationSubtext: {
+    fontSize: 14,
+    color: "#6a624f",
+  },
+
+  summaryGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: 10,
+    marginBottom: 14,
+  },
+
+  summaryCard: {
+    background: "#ffffff",
+    borderRadius: 20,
+    padding: 14,
+    boxShadow: "0 8px 20px rgba(0,0,0,0.045)",
+    border: "1px solid #efeada",
+    minHeight: 88,
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "space-between",
+  },
+
+  summaryLabel: {
+    fontSize: 12,
+    color: "#827b6b",
+    lineHeight: 1.2,
+  },
+
+  summaryValue: {
+    fontSize: 18,
+    fontWeight: 800,
+    color: "#141414",
+    marginTop: 8,
+    wordBreak: "break-word",
+  },
+
+  tabBar: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 8,
+    marginBottom: 14,
+  },
+
+  tabButton: {
+    minHeight: 48,
+    borderRadius: 16,
+    border: "1px solid #ebe4d2",
+    background: "#ffffff",
+    color: "#665f50",
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: "pointer",
+    padding: "10px 8px",
+  },
+
+  tabButtonActive: {
+    background: "#e6dfbf",
+    color: "#161616",
+  },
+
+  sectionStack: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 14,
+  },
+
+  card: {
+    background: "#ffffff",
+    borderRadius: 24,
+    padding: 16,
+    boxShadow: "0 10px 24px rgba(0,0,0,0.05)",
+    border: "1px solid #efeada",
+  },
+
+  sectionHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 14,
+  },
+
+  sectionTitle: {
+    margin: 0,
+    fontSize: 18,
+    fontWeight: 800,
+    color: "#151515",
+  },
+
+  sectionMiniTotal: {
+    fontSize: 14,
+    color: "#716958",
+    fontWeight: 700,
+  },
+
+  formStack: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+
+  input: {
+    width: "100%",
+    height: 48,
+    borderRadius: 16,
+    border: "1px solid #e9e3d3",
+    padding: "0 14px",
+    fontSize: 15,
+    outline: "none",
+    boxSizing: "border-box",
+    background: "#fff",
+  },
+
+  textarea: {
+    width: "100%",
+    minHeight: 110,
+    borderRadius: 16,
+    border: "1px solid #e9e3d3",
+    padding: 14,
+    fontSize: 15,
+    outline: "none",
+    boxSizing: "border-box",
+    resize: "vertical",
+    fontFamily: "inherit",
+    background: "#fff",
+  },
+
+  checkboxRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    fontSize: 14,
+    color: "#5e594f",
+  },
+
+  primaryButton: {
+    height: 48,
+    borderRadius: 16,
+    border: "none",
+    background: "#d9d1ad",
+    color: "#151515",
+    fontSize: 15,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+
+  collapseButton: {
+    width: "100%",
+    height: 46,
+    borderRadius: 16,
+    border: "1px solid #ebe3cc",
+    background: "#faf8ef",
+    color: "#4f4a40",
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+
+  listWrap: {
+    marginTop: 14,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+
+  listRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: "12px 0",
+    borderBottom: "1px solid #f0ece0",
+  },
+
+  billCheckWrap: {
+    paddingTop: 2,
+  },
+
+  flexGrow: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  rowTitle: {
+    fontSize: 15,
+    fontWeight: 700,
+    color: "#1a1a1a",
+    wordBreak: "break-word",
+  },
+
+  rowSubtle: {
+    marginTop: 4,
+    fontSize: 13,
+    color: "#7a7362",
+  },
+
+  emptyText: {
+    color: "#87806f",
+    fontSize: 14,
+    padding: "6px 0",
+  },
+
+  inlineActions: {
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+    marginLeft: 6,
+  },
+
+  plusButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    border: "1px solid #dfd6be",
+    background: "#faf8ef",
+    color: "#605946",
+    cursor: "pointer",
+    fontWeight: 800,
+    fontSize: 18,
+    lineHeight: 1,
+  },
+
+  minusButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    border: "1px solid #efd2d2",
+    background: "#fff6f6",
+    color: "#b45d5d",
+    cursor: "pointer",
+    fontWeight: 800,
+    fontSize: 18,
+    lineHeight: 1,
+  },
+
+  editStack: {
+    width: "100%",
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+
+  calendarWeekHeader: {
+    display: "grid",
+    gridTemplateColumns: "repeat(7, 1fr)",
+    gap: 6,
+    marginBottom: 8,
+  },
+
+  weekDay: {
+    textAlign: "center",
+    fontSize: 12,
+    color: "#857d6c",
+    fontWeight: 700,
+  },
+
+  calendarGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(7, 1fr)",
+    gap: 6,
+  },
+
+  calendarEmptyCell: {
+    minHeight: 82,
+  },
+
+  calendarDayCell: {
+    minHeight: 82,
+    borderRadius: 14,
+    border: "1px solid #ece6d5",
+    background: "#fffdf8",
+    padding: 6,
+    textAlign: "left",
+    cursor: "pointer",
+    boxSizing: "border-box",
+    overflow: "hidden",
+  },
+
+  calendarDayCellSelected: {
+    background: "#f3edd3",
+    border: "1px solid #d9cfaa",
+  },
+
+  calendarDayNumber: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: "#4d473c",
+    marginBottom: 4,
+  },
+
+  calendarPreviewWrap: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+  },
+
+  calendarPreviewText: {
+    fontSize: 10,
+    color: "#655f52",
+    lineHeight: 1.15,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+
+  calendarMoreText: {
+    fontSize: 10,
+    color: "#9b927d",
+    lineHeight: 1.15,
+  },
+};

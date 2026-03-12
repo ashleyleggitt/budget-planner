@@ -458,7 +458,7 @@ export default function Page() {
         const hydrated = ensureMonthData(importedAppData, importedMonth!);
 
         setAppData(hydrated);
-        setCurrentMonth(importedMonth);
+        setCurrentMonth(importedMonth!);
         setSelectedDay(1);
         setShowPaidBills(false);
 

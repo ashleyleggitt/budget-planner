@@ -455,7 +455,7 @@ export default function Page() {
             ? parsed.currentMonth
             : getCurrentMonthKey();
 
-        const hydrated = ensureMonthData(importedAppData, importedMonth);
+        const hydrated = ensureMonthData(importedAppData, importedMonth!);
 
         setAppData(hydrated);
         setCurrentMonth(importedMonth);
